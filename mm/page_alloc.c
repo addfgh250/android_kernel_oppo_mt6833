@@ -71,8 +71,6 @@
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(mm_page_alloc);
 EXPORT_TRACEPOINT_SYMBOL_GPL(mm_page_free);
-/*add for extra_free_kbytes ***must at last*/
-#include <linux/of.h>
 
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
@@ -342,16 +340,10 @@ const char * const migratetype_names[MIGRATE_TYPES] = {
 };
 
 int min_free_kbytes = 1024;
+int extra_free_kbytes = 36846;
 int user_min_free_kbytes = -1;
 static int watermark_boost_factor __read_mostly = 15000;
 static int watermark_scale_factor = 10;
-
-/*
- * Extra memory for the system to try freeing. Used to temporarily
- * free memory, to make space for new workloads. Anyone can allocate
- * down to the min watermarks controlled by min_free_kbytes above.
- */
-int extra_free_kbytes = 0;
 
 /* virt_zone is the "real" zone pages in virtual zones are taken from */
 int virt_zone;
@@ -5927,39 +5919,14 @@ static void setup_per_zone_lowmem_reserve(void)
 	calculate_totalreserve_pages();
 }
 
-/*add for extra_free_kbytes */
-static inline int support_extra_free_kbytes(void)
-{
-  	struct device_node *node;
-  	int ret = 0;
-
-  	node = of_find_compatible_node(NULL, NULL, "oplus,extra_free_kbytes");
-  	if (node == NULL) {
-		pr_err("Can't find oplus,extra_free_kbytes node\n");
-  		goto out;
-  	}
-  	ret = of_property_read_bool(node,"extra_free_kbytes");
-  	pr_err("extra_free_kbytes is %d\n", ret);
-
-  out:
-  	return ret;
-}
-
 static void __setup_per_zone_wmarks(void)
 {
 	unsigned long pages_min = min_free_kbytes >> (PAGE_SHIFT - 10);
-	unsigned long pages_low = extra_free_kbytes >> (PAGE_SHIFT - 10);
+        unsigned long pages_low = extra_free_kbytes >> (PAGE_SHIFT - 10);
 	unsigned long lowmem_pages = 0;
 	struct zone *zone;
 	unsigned long flags;
-
-	static int low_mem_optimize = -1;
-	unsigned long vm_total_pages=nr_free_zone_pages(gfp_zone(GFP_HIGHUSER_MOVABLE));
-
-	if (low_mem_optimize < 0) {
-		low_mem_optimize = support_extra_free_kbytes();
-		pr_err("low_mem_optimize = %d\n", low_mem_optimize);
-	}
+        unsigned long vm_total_pages=nr_free_zone_pages(gfp_zone(GFP_HIGHUSER_MOVABLE));
 
 	/* Calculate total number of pages below ZONE_HIGHMEM */
 	for_each_zone(zone) {
@@ -5973,10 +5940,8 @@ static void __setup_per_zone_wmarks(void)
 		spin_lock_irqsave(&zone->lock, flags);
 		tmp = (u64)pages_min * zone_managed_pages(zone);
 		do_div(tmp, lowmem_pages);
-		if (low_mem_optimize) {
-			low = (u64)pages_low * zone_managed_pages(zone);
-			do_div(low, vm_total_pages);
-		}
+                low = (u64)pages_low * zone_managed_pages(zone);
+                do_div(low, vm_total_pages);
 		if (zone_idx(zone) > ZONE_NORMAL) {
 			/*
 			 * __GFP_HIGH and PF_MEMALLOC allocations usually don't
@@ -6010,14 +5975,9 @@ static void __setup_per_zone_wmarks(void)
 				      watermark_scale_factor, 10000));
 
 		zone->watermark_boost = 0;
-		zone->_watermark[WMARK_LOW]  = min_wmark_pages(zone) + tmp;
-		if (low_mem_optimize) {
-			zone->_watermark[WMARK_LOW]  = min_wmark_pages(zone) + low + tmp;
-			zone->_watermark[WMARK_HIGH] = min_wmark_pages(zone) + low + tmp * 2;
-		} else {
-		        zone->_watermark[WMARK_HIGH] = low_wmark_pages(zone) + tmp;
-		        zone->_watermark[WMARK_PROMO] = high_wmark_pages(zone) + tmp;
-                }
+		zone->_watermark[WMARK_LOW]  = min_wmark_pages(zone) + low + tmp;
+		zone->_watermark[WMARK_HIGH] = min_wmark_pages(zone) + low + tmp * 2;
+		zone->_watermark[WMARK_PROMO] = high_wmark_pages(zone) + tmp;
 
 		spin_unlock_irqrestore(&zone->lock, flags);
 	}
@@ -6273,12 +6233,13 @@ static struct ctl_table page_alloc_sysctl_table[] = {
 		.proc_handler	= min_free_kbytes_sysctl_handler,
 		.extra1		= SYSCTL_ZERO,
 	},
-	{	.procname	= "extra_free_kbytes",
+	{
+		.procname	= "extra_free_kbytes",
 		.data		= &extra_free_kbytes,
-		.maxlen         = sizeof(extra_free_kbytes),
-		.mode           = 0644,
-		.proc_handler   = min_free_kbytes_sysctl_handler,
-		.extra1		= SYSCTL_ZERO
+		.maxlen		= sizeof(extra_free_kbytes),
+		.mode		= 0644,
+		.proc_handler	= min_free_kbytes_sysctl_handler,
+		.extra1		= SYSCTL_ZERO,
 	},
 	{
 		.procname	= "watermark_boost_factor",
