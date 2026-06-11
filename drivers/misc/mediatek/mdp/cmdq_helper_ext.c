@@ -71,7 +71,7 @@ static DEFINE_SPINLOCK(cmdq_write_addr_lock);
 static DEFINE_SPINLOCK(cmdq_record_lock);
 
 /* wake lock to prevnet system off */
-static struct wakeup_source mdp_wake_lock;
+static struct wakeup_source *mdp_wake_lock;
 static bool mdp_wake_locked;
 
 static struct dma_pool *mdp_rb_pool;
@@ -3358,7 +3358,7 @@ static void mdp_lock_wake_lock(bool lock)
 
 	if (lock) {
 		if (!mdp_wake_locked) {
-			__pm_stay_awake(&mdp_wake_lock);
+			__pm_stay_awake(mdp_wake_lock);
 			mdp_wake_locked = true;
 		} else  {
 			/* should not reach here */
@@ -3367,7 +3367,7 @@ static void mdp_lock_wake_lock(bool lock)
 		}
 	} else {
 		if (mdp_wake_locked) {
-			__pm_relax(&mdp_wake_lock);
+			__pm_relax(mdp_wake_lock);
 			mdp_wake_locked = false;
 		} else {
 			/* should not reach here */
@@ -3821,6 +3821,12 @@ s32 cmdq_core_resume(void)
 {
 	CMDQ_VERBOSE("[RESUME] do nothing\n");
 	/* do nothing */
+	return 0;
+}
+
+s32 cmdq_core_remove(void)
+{
+	wakeup_source_unregister(mdp_wake_lock);
 	return 0;
 }
 
@@ -5015,7 +5021,7 @@ void cmdq_core_initialize(void)
 		CMDQ_BUF_ALLOC_SIZE, 0, 0);
 	atomic_set(&mdp_rb_pool_cnt, 0);
 
-	wakeup_source_add(&mdp_wake_lock);
+	mdp_wake_lock = wakeup_source_register(cmdq_dev_get(), "mdp_pm_lock");
 }
 
 #ifdef CMDQ_DAPC_DEBUG

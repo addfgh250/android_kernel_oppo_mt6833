@@ -398,6 +398,9 @@ void ccci_set_clk_cg(struct ccci_modem *md, unsigned int on)
 					0xFF); /* special use ccci_write32 */
 			}
 
+			if (strcmp(clk_table[idx].clk_name, "infra-ccif2-ap") == 0)
+				mdelay(100);
+
 			spin_lock_irqsave(&devapc_flag_lock, flags);
 			devapc_check_flag = 0;
 			spin_unlock_irqrestore(&devapc_flag_lock, flags);
@@ -524,6 +527,11 @@ void md_cd_get_md_bootup_status(
 
 	CCCI_NOTICE_LOG(md->index, TAG, "md_boot_stats len %d\n", length);
 
+	if (md_info == NULL || md_reg == NULL) {
+		CCCI_NOTICE_LOG(md->index, TAG,
+		 "md_info or md_reg not init skip get md boot status\n");
+		return;
+	}
 	if (length < 2 || buff == NULL) {
 		md_cd_dump_md_bootup_status(md);
 		return;

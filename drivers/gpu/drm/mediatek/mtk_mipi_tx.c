@@ -260,6 +260,10 @@ struct mtk_mipi_tx {
 	struct clk *pll;
 };
 
+#ifdef OPLUS_BUG_STABILITY
+extern unsigned int oplus_get_ssc_config_data(void);
+#endif
+
 static inline struct mtk_mipi_tx *mtk_mipi_tx_from_clk_hw(struct clk_hw *hw)
 {
 	return container_of(hw, struct mtk_mipi_tx, pll_hw);
@@ -1296,6 +1300,9 @@ static int mtk_mipi_tx_pll_prepare_mt6877(struct clk_hw *hw)
 	struct mtk_mipi_tx *mipi_tx = mtk_mipi_tx_from_clk_hw(hw);
 	unsigned int txdiv, txdiv0, txdiv1, tmp;
 	u32 rate;
+	#ifdef OPLUS_BUG_STABILITY
+	unsigned int ssc_config_data;
+	#endif
 
 	DDPDBG("%s+\n", __func__);
 
@@ -1373,6 +1380,16 @@ static int mtk_mipi_tx_pll_prepare_mt6877(struct clk_hw *hw)
 
 	/* TODO: should write bit8 to set SW_ANA_CK_EN here */
 	mtk_mipi_tx_set_bits(mipi_tx, MIPITX_SW_CTRL_CON4, 1);
+
+	#ifdef OPLUS_BUG_STABILITY
+	ssc_config_data = oplus_get_ssc_config_data();
+	if (ssc_config_data != 0) {
+		writel(0x01b10003, mipi_tx->regs + MIPITX_PLL_CON2);
+		/* ssc config */
+		writel(ssc_config_data, mipi_tx->regs + MIPITX_PLL_CON3);
+		DDPDBG("%s ssc_config_data:%x\n", __func__, ssc_config_data);
+	}
+	#endif
 
 	DDPDBG("%s-\n", __func__);
 #endif

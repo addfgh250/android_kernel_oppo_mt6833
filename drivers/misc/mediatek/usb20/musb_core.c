@@ -1584,6 +1584,12 @@ static void musb_shutdown(struct platform_device *pdev)
 	#endif
 
 	DBG(0, "shut down\n");
+
+	#ifdef OPLUS_FEATURE_CHG_BASIC
+	DBG(0, "Disable musb irq.\n");
+	disable_irq_nosync(musb->nIrq);
+	#endif
+
 	#ifdef CONFIG_MTK_MUSB_PORT0_LOWPOWER_MODE
 	disable_irq(mtk_musb->nIrq);
 	musb_shutted = true;

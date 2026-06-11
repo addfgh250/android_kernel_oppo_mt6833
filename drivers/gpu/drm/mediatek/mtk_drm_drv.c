@@ -58,6 +58,10 @@
 #include "mtk_disp_aal.h"
 #include "mtk_drm_mmp.h"
 #include "mtk_drm_trace.h"
+#ifdef OPLUS_BUG_STABILITY
+#include <mt-plat/mtk_boot_common.h>
+extern unsigned long silence_mode;
+#endif
 /* *******Panel Master******** */
 #include "mtk_fbconfig_kdebug.h"
 #ifdef CONFIG_MTK_HDMI_SUPPORT
@@ -97,6 +101,9 @@ struct lcm_fps_ctx_t lcm_fps_ctx[MAX_CRTC];
 
 static int manual_shift;
 static bool no_shift;
+#ifdef OPLUS_BUG_STABILITY
+int is_shutdown_flow = 0;
+#endif
 
 int mtk_atoi(const char *str)
 {
@@ -320,55 +327,61 @@ static void mtk_atomic_rsz_calc_dual_params(
 	param[tile_idx].sub_offset = (u32)(sub_offset[0] & 0x1fffff);
 	param[tile_idx].in_len = tile_in_len[0];
 	param[tile_idx].out_len = tile_out_len[0];
-	DDPINFO("%s,%d :%s:step:%u,offset:%u.%u,len:%u->%u,out_x:%u\n", __func__, __LINE__,
-	       is_dual ? "dual" : "single",
-	       param[0].step,
-	       param[0].int_offset,
-	       param[0].sub_offset,
-	       param[0].in_len,
-	       param[0].out_len,
-	       param[0].out_x);
-
+	if (tile_idx == 0) {
+		DDPINFO("%s,%d :%s:step:%u,offset:%u.%u,len:%u->%u,out_x:%u\n",
+			__func__, __LINE__, is_dual ? "dual" : "single",
+		       param[0].step,
+		       param[0].int_offset,
+		       param[0].sub_offset,
+		       param[0].in_len,
+		       param[0].out_len,
+		       param[0].out_x);
+	}
 
 	/* right half */
-	tile_out_len[1] = dst_roi->width - tile_out_len[0];
-	tile_in_len[1] = ((tile_out_len[1] * src_roi->width * 10) /
-		dst_roi->width + 5) / 10 + tile_loss + (offset[0] ? 1 : 0);
+	if (is_dual) {
+		tile_out_len[1] = dst_roi->width - tile_out_len[0];
+		tile_in_len[1] = ((tile_out_len[1] * src_roi->width * 10) /
+			dst_roi->width + 5) / 10 + tile_loss + (offset[0] ? 1 : 0);
 
-	offset[1] = (-offset[0]) + (tile_out_len[0] * step) -
+		offset[1] = (-offset[0]) + (tile_out_len[0] * step) -
 			(src_roi->width - tile_in_len[1]) * UNIT + manual_shift;
-	/*
-	 * offset[1] = (init_phase + dst_roi->width / 2 * step) -
-	 *	(src_roi->width / 2 - tile_loss - (offset[0] ? 1 : 0) + 1) * UNIT +
-	 *	UNIT + manual_shift;
-	 */
-	if (no_shift)
-		offset[1] = 0;
-	DDPINFO("%s,in_ph:%d,man_sh:%d,off[1]:%d\n", __func__, init_phase, manual_shift, offset[1]);
-	int_offset[1] = offset[1] / UNIT;
-	sub_offset[1] = offset[1] - UNIT * int_offset[1];
-	/*
-	if (int_offset[1] & 0x1) {
-		int_offset[1]++;
-		tile_in_len[1]++;
-		DDPINFO("%s :right tile int_offset: make odd to even\n", __func__);
+		/*
+		 * offset[1] = (init_phase + dst_roi->width / 2 * step) -
+		 *	(src_roi->width / 2 - tile_loss - (offset[0] ? 1 : 0) + 1) * UNIT +
+		 *	UNIT + manual_shift;
+		 */
+		if (no_shift)
+			offset[1] = 0;
+		DDPINFO("%s,in_ph:%d,man_sh:%d,off[1]:%d\n", __func__,
+			init_phase, manual_shift, offset[1]);
+		int_offset[1] = offset[1] / UNIT;
+		sub_offset[1] = offset[1] - UNIT * int_offset[1];
+		/*
+		if (int_offset[1] & 0x1) {
+			int_offset[1]++;
+			tile_in_len[1]++;
+			DDPINFO("%s :right tile int_offset: make odd to even\n", __func__);
+		}
+		*/
+		param[1].step = step;
+		param[1].out_x = 0;
+		param[1].int_offset = (u32)(int_offset[1] & 0xffff);
+		param[1].sub_offset = (u32)(sub_offset[1] & 0x1fffff);
+		param[1].in_len = tile_in_len[1];
+		param[1].out_len = tile_out_len[1];
 	}
-	*/
-	param[1].step = step;
-	param[1].out_x = 0;
-	param[1].int_offset = (u32)(int_offset[1] & 0xffff);
-	param[1].sub_offset = (u32)(sub_offset[1] & 0x1fffff);
-	param[1].in_len = tile_in_len[1];
-	param[1].out_len = tile_out_len[1];
 
-	DDPINFO("%s,%d :%s:step:%u,offset:%u.%u,len:%u->%u,out_x:%u\n", __func__, __LINE__,
-	       is_dual ? "dual" : "single",
-	       param[1].step,
-	       param[1].int_offset,
-	       param[1].sub_offset,
-	       param[1].in_len,
-	       param[1].out_len,
-	       param[1].out_x);
+	if (tile_idx == 1 || (tile_idx == 0 && is_dual)) {
+		DDPINFO("%s,%d :%s:step:%u,offset:%u.%u,len:%u->%u,out_x:%u\n",
+			__func__, __LINE__, is_dual ? "dual" : "single",
+		       param[1].step,
+		       param[1].int_offset,
+		       param[1].sub_offset,
+		       param[1].in_len,
+		       param[1].out_len,
+		       param[1].out_x);
+	}
 }
 
 static void mtk_atomic_disp_rsz_roi(struct drm_device *dev,
@@ -714,6 +727,8 @@ static void mtk_atomic_doze_update_dsi_state(struct drm_device *dev,
 			mtk_state->prop_val[CRTC_PROP_DOZE_ACTIVE]);
 }
 
+/* #ifdef OPLUS_BUG_STABILITY */
+#if 0
 static void pq_bypass_cmdq_cb(struct cmdq_cb_data data)
 {
 	struct mtk_cmdq_cb_data *cb_data = data.data;
@@ -845,6 +860,8 @@ static void mtk_atomit_doze_enable_pq(struct drm_crtc *crtc)
 			DDPPR_ERR("failed to flush user_cmd\n");
 	}
 }
+#endif
+//#endif /* OPLUS_BUG_STABILITY */
 
 static void mtk_atomic_doze_preparation(struct drm_device *dev,
 					 struct drm_atomic_state *old_state)
@@ -862,8 +879,9 @@ static void mtk_atomic_doze_preparation(struct drm_device *dev,
 			DDPPR_ERR("%s connector has no crtc\n", __func__);
 			continue;
 		}
-
-		mtk_atomit_doze_bypass_pq(crtc);
+		/* #ifdef OPLUS_BUG_STABILITY */
+		//mtk_atomit_doze_bypass_pq(crtc);
+		/* #endif */
 
 		mtk_atomic_doze_update_dsi_state(dev, crtc, 1);
 
@@ -890,8 +908,9 @@ static void mtk_atomic_doze_finish(struct drm_device *dev,
 		}
 
 		mtk_atomic_doze_update_dsi_state(dev, crtc, 0);
-
-		mtk_atomit_doze_enable_pq(crtc);
+		/* #ifdef OPLUS_BUG_STABILITY */
+		//mtk_atomit_doze_enable_pq(crtc);
+		/* #endif */
 	}
 
 }
@@ -3932,6 +3951,16 @@ static int mtk_drm_probe(struct platform_device *pdev)
 	DDPINFO("%s-\n", __func__);
 
 	disp_dts_gpio_init(dev, private);
+
+#ifdef OPLUS_BUG_STABILITY
+	pr_err("oppo_boot_mode=%d, get_boot_mode() is %d\n", oppo_boot_mode, get_boot_mode());
+	if ((oppo_boot_mode == OPPO_SILENCE_BOOT)
+			||(get_boot_mode() == OPPO_SAU_BOOT)) {
+		pr_err("%s OPPO_SILENCE_BOOT set silence_mode to 1\n", __func__);
+		silence_mode = 1;
+	}
+#endif
+
 #ifdef CONFIG_MTK_IOMMU_V2
 	memcpy(&mydev, pdev, sizeof(mydev));
 #endif
@@ -3952,6 +3981,10 @@ static void mtk_drm_shutdown(struct platform_device *pdev)
 	struct mtk_drm_private *private = platform_get_drvdata(pdev);
 	struct drm_device *drm = private->drm;
 
+#ifdef OPLUS_BUG_STABILITY
+	is_shutdown_flow = 1;
+	pr_notice("This is %s function line:%d shutdown flag = %d\n", __func__, __LINE__, is_shutdown_flow);
+#endif
 	if (drm) {
 		DDPMSG("%s\n", __func__);
 		drm_atomic_helper_shutdown(drm);

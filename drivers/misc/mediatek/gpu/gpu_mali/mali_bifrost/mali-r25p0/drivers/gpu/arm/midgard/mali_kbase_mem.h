@@ -469,6 +469,21 @@ struct kbase_va_region {
 	int    va_refcnt;
 };
 
+/**
+ * kbase_is_ctx_reg_zone - determine whether a KBASE_REG_ZONE_<...> is for a
+ *                         context or for a device
+ * @zone_bits: A KBASE_REG_ZONE_<...> to query
+ *
+ * Return: True if the zone for @zone_bits is a context zone, False otherwise
+ */
+static inline bool kbase_is_ctx_reg_zone(unsigned long zone_bits)
+{
+	WARN_ON((zone_bits & KBASE_REG_ZONE_MASK) != zone_bits);
+	return (zone_bits == KBASE_REG_ZONE_SAME_VA ||
+		zone_bits == KBASE_REG_ZONE_CUSTOM_VA ||
+		zone_bits == KBASE_REG_ZONE_EXEC_VA);
+}
+
 /* Special marker for failed JIT allocations that still must be marked as
  * in-use
  */
@@ -492,12 +507,14 @@ static inline bool kbase_is_region_invalid_or_free(struct kbase_va_region *reg)
 	return (kbase_is_region_invalid(reg) ||	kbase_is_region_free(reg));
 }
 
-int kbase_remove_va_region(struct kbase_va_region *reg);
-static inline void kbase_region_refcnt_free(struct kbase_va_region *reg)
+void kbase_remove_va_region(struct kbase_device *kbdev,
+			    struct kbase_va_region *reg);
+static inline void kbase_region_refcnt_free(struct kbase_device *kbdev,
+					    struct kbase_va_region *reg)
 {
 	/* If region was mapped then remove va region*/
 	if (reg->start_pfn)
-		kbase_remove_va_region(reg);
+		kbase_remove_va_region(kbdev, reg);
 
 	/* To detect use-after-free in debug builds */
 	KBASE_DEBUG_CODE(reg->flags |= KBASE_REG_FREE);
@@ -532,7 +549,7 @@ static inline struct kbase_va_region *kbase_va_region_alloc_put(
 	dev_dbg(kctx->kbdev->dev, "va_refcnt %d after put %p\n",
 		region->va_refcnt, (void *)region);
 	if (!region->va_refcnt)
-		kbase_region_refcnt_free(region);
+		kbase_region_refcnt_free(kctx->kbdev, region);
 
 	return NULL;
 }
@@ -1178,6 +1195,7 @@ void kbase_mmu_disable_as(struct kbase_device *kbdev, int as_nr);
 
 void kbase_mmu_interrupt(struct kbase_device *kbdev, u32 irq_stat);
 
+#if defined(CONFIG_MALI_VECTOR_DUMP)
 /** Dump the MMU tables to a buffer
  *
  * This function allocates a buffer (of @c nr_pages pages) to hold a dump of the MMU tables and fills it. If the
@@ -1194,6 +1212,7 @@ void kbase_mmu_interrupt(struct kbase_device *kbdev, u32 irq_stat);
  * small)
  */
 void *kbase_mmu_dump(struct kbase_context *kctx, int nr_pages);
+#endif
 
 /**
  * kbase_sync_now - Perform cache maintenance on a memory region
@@ -1737,25 +1756,28 @@ bool kbase_has_exec_va_zone(struct kbase_context *kctx);
 /**
  * kbase_map_external_resource - Map an external resource to the GPU.
  * @kctx:              kbase context.
- * @reg:               The region to map.
+ * @reg:               External resource to map.
  * @locked_mm:         The mm_struct which has been locked for this operation.
  *
- * Return: The physical allocation which backs the region on success or NULL
- * on failure.
+ * On successful mapping, the VA region and the gpu_alloc refcounts will be
+ * increased, making it safe to use and store both values directly.
+ *
+ * Return: Zero on success, or negative error code.
  */
-struct kbase_mem_phy_alloc *kbase_map_external_resource(
-		struct kbase_context *kctx, struct kbase_va_region *reg,
-		struct mm_struct *locked_mm);
+int kbase_map_external_resource(struct kbase_context *kctx, struct kbase_va_region *reg,
+				struct mm_struct *locked_mm);
 
 /**
  * kbase_unmap_external_resource - Unmap an external resource from the GPU.
  * @kctx:  kbase context.
- * @reg:   The region to unmap or NULL if it has already been released.
- * @alloc: The physical allocation being unmapped.
+ * @reg:   VA region corresponding to external resource
+ *
+ * On successful unmapping, the VA region and the gpu_alloc refcounts will
+ * be decreased. If the refcount reaches zero, both @reg and the corresponding
+ * allocation may be freed, so using them after returning from this function
+ * requires the caller to explicitly check their state.
  */
-void kbase_unmap_external_resource(struct kbase_context *kctx,
-		struct kbase_va_region *reg, struct kbase_mem_phy_alloc *alloc);
-
+void kbase_unmap_external_resource(struct kbase_context *kctx, struct kbase_va_region *reg);
 
 /**
  * kbase_jd_user_buf_pin_pages - Pin the pages of a user buffer.
@@ -1996,5 +2018,4 @@ kbase_ctx_reg_zone_get(struct kbase_context *kctx, unsigned long zone_bits)
 
 	return &kctx->reg_zone[KBASE_REG_ZONE_IDX(zone_bits)];
 }
-
 #endif				/* _KBASE_MEM_H_ */

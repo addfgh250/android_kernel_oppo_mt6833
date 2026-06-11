@@ -22,8 +22,12 @@ MTK_CUSTOM_PATH  := $(srctree)/drivers/misc/mediatek
 
 
 subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/inc
+subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/dw9718taf
+subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/fp5516af
 subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/lc898122af
 subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/dw9800waf
+subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/dw9800af
+subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/b0954p65af
 subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/lc898212xdaf/inc
 ifeq ($(CONFIG_MTK_LENS_BU63165AF_SUPPORT), y)
   subdir-ccflags-y += -I$(MTK_CUSTOM_PATH)/lens/main/common/bu63165af/inc
@@ -34,7 +38,10 @@ endif
 ifeq ($(CONFIG_MTK_LENS_USE_MODULE), y)
 
 MAIN_CFILES += main_lens.c
-
+MAIN_CFILES  += common/fp5516af/FP5516AF.c
+MAIN_CFILES  += common/dw9718taf/DW9718TAF.c
+MAIN_CFILES  += common/dw9800af/DW9800AF.c
+MAIN_CFILES  += common/b0954p65af/B0954P65AF.c
 MAIN_CFILES  += common/gt9768af/GT9768AF.c
 MAIN_CFILES  += common/bu64253gwzaf/BU64253GWZAF.c
 MAIN_CFILES  += common/fp5510e2af/FP5510E2AF.c
@@ -69,6 +76,11 @@ MAIN_CFILES  += common/ov5645af/OV5645AF.c
 MAIN_CFILES  += common/ad5820af/AD5820AF.c
 MAIN_CFILES  += common/wv511aaf/WV511AAF.c
 MAIN_CFILES  += common/ak7371af/AK7371AF.c
+MAIN_CFILES  += common/fp5516af/FP5516AF.c
+MAIN_CFILES  += common/ak7377af/AK7377AF.c
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+MAIN_CFILES  += common/ak7375caf/AK7375CAF.c
+#endif
 ifeq ($(CONFIG_MTK_LENS_BU63165AF_SUPPORT), y)
 MAIN_CFILES  += common/bu63165af/BU63165AF.c
 MAIN_CFILES  += common/bu63165af/OIS_func.c
@@ -87,12 +99,14 @@ mainaf-objs := $(MAIN_CFILES:.c=.o)
 else
 
 obj-y  += main_lens.o
+obj-y  += common/fp5516af/
 obj-y  += common/fp5510e2af/
 obj-y  += common/bu6424af/
 obj-y  += common/bu6429af/
 obj-y  += common/bu64748af/
 obj-y  += common/dw9714af/
 obj-y  += common/dw9800waf/
+obj-y  += common/b0954p65af/
 obj-y  += common/dw9814af/
 obj-y  += common/dw9718af/
 obj-y += common/dw9718taf/
@@ -114,6 +128,12 @@ obj-y += common/ov5645af/
 obj-y  += common/wv511aaf/
 obj-y  += common/ak7371af/
 obj-y  += common/gt9772af/
+obj-y  += common/ak7377af/
+obj-y  += common/fp5516af/
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+obj-y  += common/ak7375caf/
+obj-y  += common/ak7314af/
+#endif
 obj-y  += common/gt9768af/
 ifeq ($(CONFIG_MTK_LENS_BU63165AF_SUPPORT), y)
   obj-y  += common/bu63165af/
@@ -121,5 +141,7 @@ else
   obj-y  += common/bu63169af/
 endif
 obj-y  += common/bu64253gwzaf/
+obj-y  += common/dw9800af/
+obj-y  += common/dw9718taf/
 
 endif

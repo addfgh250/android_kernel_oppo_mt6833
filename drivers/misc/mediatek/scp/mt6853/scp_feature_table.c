@@ -80,6 +80,12 @@ struct scp_feature_tb feature_table[NUM_FEATURE_ID] = {
 		.sys_id         = SCPSYS_CORE1,
 	},
 	{
+		.feature        = VOW_VENDOR_SPEECH_FEATURE_ID,
+		.freq           = 1,
+		.enable         = 0,
+		.sys_id         = SCPSYS_CORE1,
+	},
+	{
 		.feature        = VOW_VENDOR_G_FEATURE_ID,
 		.freq           = 22,
 		.enable         = 0,
@@ -105,6 +111,14 @@ struct scp_feature_tb feature_table[NUM_FEATURE_ID] = {
 		.sys_id         = SCPSYS_CORE0,
 	},
 #endif
+#ifdef OPLUS_FEATURE_CAMERA_OIS
+    {
+        .feature        = OIS_FEATURE_ID,
+        .freq           = 400,
+        .enable         = 0,
+        .sys_id         = SCPSYS_CORE0,
+    },
+#endif //OPLUS_FEATURE_CAMERA_OIS
 };
 
 /*scp sensor type list*/

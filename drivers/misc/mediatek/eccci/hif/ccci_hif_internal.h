@@ -255,5 +255,5 @@ struct dvfs_ref {
 
 struct dvfs_ref *mtk_ccci_get_dvfs_table(int is_ul, int *tbl_num);
 
-
+extern void ccmni_set_cur_speed(u64 cur_dl_speed);
 #endif

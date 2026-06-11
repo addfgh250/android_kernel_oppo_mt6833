@@ -200,6 +200,10 @@ static void mtk_dsc_start(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
 		/* DSC Empty flag always high */
 		mtk_ddp_write_mask(comp, 0x4000, DISP_REG_DSC_CON,
 				DSC_EMPTY_FLAG_SEL, handle);
+
+		/* DSC output buffer as FHD(plus) */
+		 mtk_ddp_write_mask(comp, 0x800002C2, DISP_REG_DSC_OBUF,
+				0xFFFFFFFF, handle);
 	}
 
 	DDPINFO("%s, dsc_start:0x%x\n",
@@ -330,7 +334,7 @@ static void mtk_dsc_config(struct mtk_ddp_comp *comp,
 	unsigned int init_delay_height;
 	struct mtk_panel_dsc_params *dsc_params;
 
-	DDPFUNC();
+	DDPDBG("%s: line:%d",__func__,__LINE__);
 	if (!comp->mtk_crtc || (!comp->mtk_crtc->panel_ext
 				&& !comp->mtk_crtc->is_dual_pipe))
 		return;
