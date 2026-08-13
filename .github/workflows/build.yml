@@ -73,7 +73,8 @@ jobs:
           sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
           echo "=== A/B: OPPO official defconfig ==="
           cp arch/arm64/configs/k6833v1_64_defconfig .config
-          make olddefconfig >/dev/null 2>&1 || true
+          make olddefconfig; echo "olddefconfig exit: $?"
+          echo "--- MACH lines ---"
           grep -E "CONFIG_(MACH_MT6833|ARCH_MEDIATEK)" .config || echo "(MACH_MT6833 MISSING with official defconfig)"
           echo "=== A/B: huawei wiko defconfig ==="
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
