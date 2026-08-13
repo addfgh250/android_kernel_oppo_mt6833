@@ -37,7 +37,8 @@ jobs:
           if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-12-
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=aarch64-linux-gnu-gcc-12
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
@@ -82,7 +83,8 @@ jobs:
           grep -E "^CONFIG_(LOCALVERSION|MODULES|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|SCHED_ASSIST)" .config
       - name: Build vmlinux
         run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-12-
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=aarch64-linux-gnu-gcc-12
           export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes"
           make -j$(nproc) vmlinux
       - name: Check System.map
