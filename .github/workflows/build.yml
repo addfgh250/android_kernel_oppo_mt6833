@@ -22,6 +22,10 @@ jobs:
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # OPPO 官方仓库存在断链 symlink (vendor/oplus 未开源)，修复之
+          if [ -L kernel/sched_assist ] || [ -f kernel/sched_assist ]; then rm -f kernel/sched_assist; fi
+          mkdir -p kernel/sched_assist
+          touch kernel/sched_assist/Kconfig
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
           make olddefconfig
           echo "--- key config ---"
