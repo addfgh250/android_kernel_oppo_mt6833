@@ -34,9 +34,21 @@ jobs:
           cp -rn 4.14.186/. "$GITHUB_WORKSPACE/"
           cd "$GITHUB_WORKSPACE"
           echo "vendor files: $(find "$GITHUB_WORKSPACE/../vendor" -type f | wc -l)"
-          if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # kernel/Makefile 里 sched_assist 是无条件 obj-y（#ifdef 只是注释），
+          # 改为 CONFIG 控制（真机无此特性 => 不编译）
+          sed -i 's|^obj-y += sched_assist/|obj-$(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) += sched_assist/|' kernel/Makefile
+          # 关闭 OPLUS 特性宏（华为 BSP 无这些特性，关闭后 task_struct 等布局更接近真机）
+          sed -i '/^ALLOWED_MCROS :=/,/^$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_FEATURE_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_BUG_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_ARCH_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
+          sed -i 's/^KBUILD_CFLAGS += -DOPLUS_FEATURE_/#KBUILD_CFLAGS += -DOPLUS_FEATURE_/' Makefile
+          sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
+          sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
+          sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
@@ -59,53 +71,18 @@ jobs:
                 mkdir -p "$(dirname "$F")"; touch "$F"
               fi
             done
-          # kernel/Makefile 里 sched_assist 是无条件 obj-y（#ifdef 只是注释），
-          # 改为 CONFIG 控制（真机无此特性 => 不编译）
-          sed -i 's|^obj-y += sched_assist/|obj-$(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) += sched_assist/|' kernel/Makefile
-          # 关闭 OPLUS 特性宏（华为 BSP 无这些特性，关闭后 task_struct 等布局更接近真机）
-          sed -i '/^ALLOWED_MCROS :=/,/^$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_FEATURE_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_BUG_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_ARCH_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i 's/^KBUILD_CFLAGS += -DOPLUS_FEATURE_/#KBUILD_CFLAGS += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
-          echo "=== tree Kconfig.platforms check ==="
-          wc -l arch/arm64/Kconfig.platforms
-          grep -n "config MACH_MT6833" arch/arm64/Kconfig.platforms || echo "MACH_MT6833 NOT IN TREE!"
-          grep -n "config MACH_MT6853" arch/arm64/Kconfig.platforms | head -2
-          echo "=== SRCARCH diag ==="
-          echo "SRCARCH=[$SRCARCH] ARCH=[$ARCH]"
-          make -s -p 2>/dev/null | grep -E "^SRCARCH *[:?]?=" | head -3 || true
-          echo "=== A/B: OPPO official defconfig ==="
-          ls -la arch/arm64/configs/k6833v1_64_defconfig
-          cp arch/arm64/configs/k6833v1_64_defconfig .config
-          echo "cp exit: $?"
-          ls -la .config
-          grep -c "^CONFIG_" .config || true
-          grep "MACH_MT6833" .config || echo "(raw defconfig has no MACH_MT6833)"
-          make olddefconfig; echo "olddefconfig exit: $?"
-          echo "--- MACH lines ---"
-          grep -E "CONFIG_(MACH_MT6833|ARCH_MEDIATEK)" .config || echo "(MACH_MT6833 MISSING with official defconfig)"
-          echo "=== A/B: huawei wiko defconfig ==="
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
-          # 华为树里 MACH_MT6833 不依赖 ARCH_MEDIATEK，但 OPPO 树依赖。
-          # 强制开 ARCH_MEDIATEK 让 MACH_MT6833 可见（语义上真机就是 MTK 平台）
-          echo "CONFIG_ARCH_MEDIATEK=y" >> .config
           # 真机(华为BSP)没有这些 OPPO 专属特性，显式关闭以对齐真机布局
           echo "# CONFIG_SCHED_ASSIST is not set" >> .config
           # 模块签名密钥：华为私有 pem 不存在，清空（不影响符号偏移）
           sed -i 's/^CONFIG_MODULE_SIG_KEY=.*/CONFIG_MODULE_SIG_KEY=""/' .config
           make olddefconfig
           echo "--- key config ---"
-          grep -E "^CONFIG_(LOCALVERSION|MODULES|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|SCHED_ASSIST)" .config
+          grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
       - name: Build vmlinux
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes"
-          echo "--- diag config ---"
-          grep -E "CONFIG_(ARCH_MEDIATEK|MACH_MT6833|MTK_UNIFY_POWER|MTK_UPOWER)" .config || echo "(not in .config)"
           # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
           make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux
       - name: Check System.map
