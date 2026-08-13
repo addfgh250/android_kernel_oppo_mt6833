@@ -37,6 +37,8 @@ jobs:
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # OPLUS patch 用了尖括号相对 include，gcc 找不到 -> 改引号形式
+          sed -i 's|#include <\.\./|#include "../|g' kernel/locking/rwsem.c
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
