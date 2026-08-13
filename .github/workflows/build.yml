@@ -22,17 +22,16 @@ jobs:
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          # OPPO 官方仓库存在大量断链 symlink (vendor/oplus 未开源)，批量修复：
-          # 断链 -> 同名目录 + 空 Kconfig（华为 config 无 OPLUS 选项，不会引用其源码）
+          # 修复 OPPO 仓库断链 symlink (vendor/oplus 未开源)
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
               echo "fix broken symlink: $L"
               rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
             fi
           done
-          # 修复 Kconfig source 引用了但缺失的文件 (OPPO vendor 树未开源导致)
-          grep -rhoP 'source\\s+"[^"]+"' --include='Kconfig*' . \
-            | sed 's/.*"\(.*\)"/\1/' | grep -v '\\$' | sort -u | while read F; do
+          # 修复 Kconfig source 引用缺失文件
+          grep -rhoP 'source\s+"[^"]+"' --include='Kconfig*' . \
+            | sed -E 's/.*"([^"]+)"/\1/' | grep -v '\$' | sort -u | while read F; do
               if [ ! -f "$F" ]; then
                 echo "fix missing kconfig: $F"
                 mkdir -p "$(dirname "$F")"; touch "$F"
