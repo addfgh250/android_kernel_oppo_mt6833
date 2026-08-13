@@ -19,17 +19,29 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu libssl-dev flex bison bc
           aarch64-linux-gnu-gcc --version | head -1
+      - name: Fetch OPLUS vendor tree
+        run: |
+          # OPPO 官方仓库未开源 vendor/oplus（symlink 断链），
+          # 从完整备份仓库拉取 vendor 树（MT6853 同代 BSP，ColorOS 同版本线）
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/vendor-src
+          cd /tmp/vendor-src
+          git sparse-checkout set vendor/oplus
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/vendor/"
+          find "$GITHUB_WORKSPACE/vendor" -type d | wc -l
+          find "$GITHUB_WORKSPACE/vendor" -type f | wc -l
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          # 修复 OPPO 仓库断链 symlink (vendor/oplus 未开源)
+          # 兜底: 仍断链的 symlink 用空 Kconfig 目录替代
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
               echo "fix broken symlink: $L"
               rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
             fi
           done
-          # 修复 Kconfig source 引用缺失文件
+          # 兜底: Kconfig source 引用缺失文件
           grep -rhoP 'source\s+"[^"]+"' --include='Kconfig*' . \
             | sed -E 's/.*"([^"]+)"/\1/' | grep -v '\$' | sort -u | while read F; do
               if [ ! -f "$F" ]; then
