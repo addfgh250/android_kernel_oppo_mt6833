@@ -70,6 +70,10 @@ jobs:
           sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
+          # 真机(华为BSP)没有这些 OPPO 专属特性，显式关闭以对齐真机布局
+          echo "# CONFIG_SCHED_ASSIST is not set" >> .config
+          # 模块签名密钥：华为私有 pem 不存在，清空（不影响符号偏移）
+          sed -i 's/^CONFIG_MODULE_SIG_KEY=.*/CONFIG_MODULE_SIG_KEY=""/' .config
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MODULES|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|SCHED_ASSIST)" .config
