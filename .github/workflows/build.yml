@@ -98,8 +98,11 @@ jobs:
           c = c[:idx] + stub + c[idx:]
           open(p, 'w').write(c)
           PYAMP
-          # helio-dvfsrc-qos.h 尖括号 include -> 引号
-          sed -i 's|#include <helio-dvfsrc-qos.h>|#include "helio-dvfsrc-qos.h"|' drivers/devfreq/helio-dvfsrc-v3/helio-dvfsrc-qos.c
+          # helio-dvfsrc-qos.h 尖括号 include -> 引号（该目录多个文件都有）
+          grep -rl '#include <helio-dvfsrc-qos.h>' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
+            sed -i 's|#include <helio-dvfsrc-qos.h>|#include "helio-dvfsrc-qos.h"|' "$F"
+            echo "fixed: $F"
+          done
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
