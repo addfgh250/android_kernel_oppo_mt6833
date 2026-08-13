@@ -71,6 +71,10 @@ jobs:
           sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
+          echo "=== tree Kconfig.platforms check ==="
+          wc -l arch/arm64/Kconfig.platforms
+          grep -n "config MACH_MT6833" arch/arm64/Kconfig.platforms || echo "MACH_MT6833 NOT IN TREE!"
+          grep -n "config MACH_MT6853" arch/arm64/Kconfig.platforms | head -2
           echo "=== A/B: OPPO official defconfig ==="
           cp arch/arm64/configs/k6833v1_64_defconfig .config
           make olddefconfig; echo "olddefconfig exit: $?"
