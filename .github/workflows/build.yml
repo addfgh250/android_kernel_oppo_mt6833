@@ -25,14 +25,14 @@ jobs:
             https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/vendor-src
           cd /tmp/vendor-src
           git sparse-checkout set vendor/oplus
-          mkdir -p "$GITHUB_WORKSPACE/vendor"
-          cp -r vendor/oplus "$GITHUB_WORKSPACE/vendor/"
-          echo "vendor dirs: $(find "$GITHUB_WORKSPACE/vendor" -type d | wc -l)"
-          echo "vendor files: $(find "$GITHUB_WORKSPACE/vendor" -type f | wc -l)"
+          # symlink target 是 ../../vendor/... → 目标是工作区上级的兄弟目录
+          mkdir -p "$GITHUB_WORKSPACE/../vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/../vendor/"
+          cd "$GITHUB_WORKSPACE"
+          echo "vendor dirs: $(find "$GITHUB_WORKSPACE/../vendor" -type d | wc -l)"
+          echo "vendor files: $(find "$GITHUB_WORKSPACE/../vendor" -type f | wc -l)"
           echo "--- symlink debug ---"
-          ls -la kernel/sched_assist
           readlink kernel/sched_assist || echo "(not a symlink)"
-          ls "$GITHUB_WORKSPACE/vendor/oplus/kernel/oplus_performance/sched_assist/sched_assist_mutex.h"
           if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
