@@ -61,10 +61,10 @@ jobs:
               fi
             done
           # 关闭 OPLUS 特性宏（华为 BSP 无这些特性，关闭后 task_struct 等布局更接近真机）
-          sed -i 's/^ALLOWED_MCROS := .*/ALLOWED_MCROS :=/' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_FEATURE_[A-Z0-9_]* *\\$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_BUG_[A-Z0-9_]* *\\$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_ARCH_[A-Z0-9_]* *\\$/d' OplusKernelEnvConfig.mk
+          sed -i '/^ALLOWED_MCROS :=/,/^$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_FEATURE_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_BUG_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
+          sed -i '/^OPLUS_ARCH_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
           sed -i 's/^KBUILD_CFLAGS += -DOPLUS_FEATURE_/#KBUILD_CFLAGS += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
