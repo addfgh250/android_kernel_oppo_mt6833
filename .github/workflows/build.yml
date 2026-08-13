@@ -37,18 +37,6 @@ jobs:
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          # kernel/Makefile 里 sched_assist 是无条件 obj-y（#ifdef 只是注释），
-          # 改为 CONFIG 控制（真机无此特性 => 不编译）
-          sed -i 's|^obj-y += sched_assist/|obj-$(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) += sched_assist/|' kernel/Makefile
-          # 关闭 OPLUS 特性宏（华为 BSP 无这些特性，关闭后 task_struct 等布局更接近真机）
-          sed -i '/^ALLOWED_MCROS :=/,/^$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_FEATURE_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_BUG_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i '/^OPLUS_ARCH_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
-          sed -i 's/^KBUILD_CFLAGS += -DOPLUS_FEATURE_/#KBUILD_CFLAGS += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
-          sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
@@ -71,17 +59,7 @@ jobs:
                 mkdir -p "$(dirname "$F")"; touch "$F"
               fi
             done
-          # fair.c 被 OPPO patch：无条件调用 sched_assist 函数。
-          # 真机华为无此特性 -> 精确移除，保持布局接近真机
-          python3 - << 'PYFAIR'
-          c = open('kernel/sched/fair.c').read()
-          c = c.replace('sf_task_util_record(p);', '/* sf_task_util_record(p); */')
-          c = c.replace('|| (test_task_ux(p) && sysctl_sched_assist_enabled && (sched_assist_scene(SA_SLIDE)|| sched_assist_scene(SA_INPUT) || sched_assist_scene(SA_LAUNCHER_SI) || sched_assist_scene(SA_ANIM)))', '')
-          open('kernel/sched/fair.c','w').write(c)
-          PYFAIR
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
-          # 真机(华为BSP)没有这些 OPPO 专属特性，显式关闭以对齐真机布局
-          echo "# CONFIG_SCHED_ASSIST is not set" >> .config
           # 模块签名密钥：华为私有 pem 不存在，清空（不影响符号偏移）
           sed -i 's/^CONFIG_MODULE_SIG_KEY=.*/CONFIG_MODULE_SIG_KEY=""/' .config
           make olddefconfig
