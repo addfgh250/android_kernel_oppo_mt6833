@@ -83,6 +83,18 @@ jobs:
           sed -i 's/\t\tunsigned long element;/\t\tunsigned long element;\n\t\tunsigned long blk_idx;/' drivers/block/zram/zram_drv.h
           # clkdbg-mt6833.c 尖括号 include 同目录头 -> 改引号
           sed -i 's|#include <clk-mux.h>|#include "clk-mux.h"|' drivers/clk/mediatek/clkdbg-mt6833.c
+          # cpuidle-mediatek.c 尖括号 include -> 引号
+          sed -i 's|#include <dt_idle_states.h>|#include "dt_idle_states.h"|' drivers/cpuidle/cpuidle-mediatek.c
+          # oplus_ext_amp 函数在 vendor 音频目录但无 Makefile 引用 -> stub 替代
+          python3 - << 'PYAMP'
+          p = 'sound/soc/mediatek/mt6833/mt6833-mt6359.c'
+          c = open(p).read()
+          c = c.replace('oplus_ext_amp_recv_enable', 'stub_oplus_ext_amp_recv_enable')
+          c = c.replace('oplus_ext_amp_r_enable', 'stub_oplus_ext_amp_r_enable')
+          c += '\nstatic void __attribute__((unused)) stub_oplus_ext_amp_recv_enable(int en) {}\n'
+          c += 'static void __attribute__((unused)) stub_oplus_ext_amp_r_enable(int en) {}\n'
+          open(p, 'w').write(c)
+          PYAMP
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
