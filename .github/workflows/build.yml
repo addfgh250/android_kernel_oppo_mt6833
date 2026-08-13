@@ -75,8 +75,16 @@ jobs:
           wc -l arch/arm64/Kconfig.platforms
           grep -n "config MACH_MT6833" arch/arm64/Kconfig.platforms || echo "MACH_MT6833 NOT IN TREE!"
           grep -n "config MACH_MT6853" arch/arm64/Kconfig.platforms | head -2
+          echo "=== SRCARCH diag ==="
+          echo "SRCARCH=[$SRCARCH] ARCH=[$ARCH]"
+          make -s -p 2>/dev/null | grep -E "^SRCARCH *[:?]?=" | head -3 || true
           echo "=== A/B: OPPO official defconfig ==="
+          ls -la arch/arm64/configs/k6833v1_64_defconfig
           cp arch/arm64/configs/k6833v1_64_defconfig .config
+          echo "cp exit: $?"
+          ls -la .config
+          grep -c "^CONFIG_" .config || true
+          grep "MACH_MT6833" .config || echo "(raw defconfig has no MACH_MT6833)"
           make olddefconfig; echo "olddefconfig exit: $?"
           echo "--- MACH lines ---"
           grep -E "CONFIG_(MACH_MT6833|ARCH_MEDIATEK)" .config || echo "(MACH_MT6833 MISSING with official defconfig)"
