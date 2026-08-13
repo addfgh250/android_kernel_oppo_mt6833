@@ -39,6 +39,11 @@ jobs:
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           # OPLUS patch 用了尖括号相对 include，gcc 找不到 -> 改引号形式
           sed -i 's|#include <\.\./sched/sched\.h>|#include "../sched/sched.h"|' kernel/locking/rwsem.c
+          # vendor trace 头被 <trace/...> 引用，需放到 include/trace/（OPPO 构建脚本同款操作）
+          mkdir -p include/trace
+          cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/foreground_io_opt/trace/foreground_io_opt_trace.h" include/trace/
+          # fair.c 6107 声明缺返回类型（OPPO 代码 bug），补 void
+          sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
