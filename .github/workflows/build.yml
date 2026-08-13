@@ -30,6 +30,14 @@ jobs:
               rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
             fi
           done
+          # 修复 Kconfig source 引用了但缺失的文件 (OPPO vendor 树未开源导致)
+          grep -rhoP 'source\\s+"[^"]+"' --include='Kconfig*' . \
+            | sed 's/.*"\(.*\)"/\1/' | grep -v '\\$' | sort -u | while read F; do
+              if [ ! -f "$F" ]; then
+                echo "fix missing kconfig: $F"
+                mkdir -p "$(dirname "$F")"; touch "$F"
+              fi
+            done
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
           make olddefconfig
           echo "--- key config ---"
