@@ -43,8 +43,8 @@ jobs:
           mkdir -p include/trace
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/foreground_io_opt/trace/foreground_io_opt_trace.h" include/trace/
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/sched_assist/sched_assist_trace.h" include/trace/
-          # gcc-12 对 always_inline 声明先于定义会硬报错 -> 降级为 inline（不影响数据布局）
-          sed -i 's/__always_inline/inline/g' include/linux/keyslot-manager.h
+          # gcc-12 对 gnu89 inline 语义变化：声明处加 extern（内核社区标准修法）
+          sed -i 's/^inline void ksm_flock/extern inline void ksm_flock/' include/linux/keyslot-manager.h
           # fair.c 6107 声明缺返回类型（OPPO 代码 bug），补 void
           sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
           # 修复仍断链的 symlink
