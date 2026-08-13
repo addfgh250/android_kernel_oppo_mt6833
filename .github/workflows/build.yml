@@ -21,23 +21,24 @@ jobs:
           aarch64-linux-gnu-gcc --version | head -1
       - name: Fetch OPLUS vendor tree
         run: |
+          # OPPO 官方仓库缺 vendor 私有代码（symlink 断链 + 硬缺失），
+          # 从完整备份仓库(MT6853 同代 BSP)拉取 vendor 树 + 参考内核树
           git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/vendor-src
-          cd /tmp/vendor-src
-          git sparse-checkout set vendor/oplus
+            https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/ref-src
+          cd /tmp/ref-src
+          git sparse-checkout set vendor/oplus 4.14.186
           # symlink target 是 ../../vendor/... → 目标是工作区上级的兄弟目录
           mkdir -p "$GITHUB_WORKSPACE/../vendor"
           cp -r vendor/oplus "$GITHUB_WORKSPACE/../vendor/"
+          # 用参考树补官方 repo 硬缺失的文件/symlink（-n 不覆盖已有）
+          cp -rn 4.14.186/. "$GITHUB_WORKSPACE/"
           cd "$GITHUB_WORKSPACE"
-          echo "vendor dirs: $(find "$GITHUB_WORKSPACE/../vendor" -type d | wc -l)"
           echo "vendor files: $(find "$GITHUB_WORKSPACE/../vendor" -type f | wc -l)"
-          echo "--- symlink debug ---"
-          readlink kernel/sched_assist || echo "(not a symlink)"
           if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          # 修复断链 symlink：优先用原 target 重建（vendor 树已就位），仍断则 stub
+          # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
               T=$(readlink "$L")
@@ -47,7 +48,7 @@ jobs:
                 echo "stub broken symlink: $L"
                 rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
               else
-                echo "rebuilt symlink: $L -> $T"
+                echo "rebuilt symlink: $L"
               fi
             fi
           done
