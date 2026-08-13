@@ -1,0 +1,45 @@
+name: build-systemmap-wiko
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+      - 'arch/arm64/configs/wiko_gar_an60_defconfig'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu libssl-dev flex bison bc
+          aarch64-linux-gnu-gcc --version | head -1
+      - name: Prepare config
+        run: |
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          cp arch/arm64/configs/wiko_gar_an60_defconfig .config
+          make olddefconfig
+          echo "--- key config ---"
+          grep -E "^CONFIG_(LOCALVERSION|MODULES|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
+      - name: Build vmlinux
+        run: |
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc) vmlinux
+      - name: Check System.map
+        run: |
+          ls -la System.map
+          head -3 System.map
+          echo "--- symbol check ---"
+          grep -E " (init_task|selinux_state|init_cred|init_user_ns)$" System.map || true
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: systemmap-wiko
+          path: |
+            System.map
+            .config
