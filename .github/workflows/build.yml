@@ -37,8 +37,6 @@ jobs:
           if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=aarch64-linux-gnu-gcc-12
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
@@ -84,9 +82,9 @@ jobs:
       - name: Build vmlinux
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=aarch64-linux-gnu-gcc-12
           export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes"
-          make -j$(nproc) vmlinux
+          # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
+          make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux
       - name: Check System.map
         run: |
           ls -la System.map
