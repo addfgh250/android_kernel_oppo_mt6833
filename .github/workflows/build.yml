@@ -17,8 +17,8 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu libssl-dev flex bison bc
-          aarch64-linux-gnu-gcc --version | head -1
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc
+          aarch64-linux-gnu-gcc-12 --version | head -1
       - name: Fetch OPLUS vendor tree
         run: |
           # OPPO 官方仓库缺 vendor 私有代码（symlink 断链 + 硬缺失），
@@ -37,7 +37,7 @@ jobs:
           if [ -e kernel/sched_assist ]; then echo "SYMLINK RESOLVES"; else echo "SYMLINK BROKEN"; fi
       - name: Prepare config
         run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-12-
           # 修复仍断链的 symlink
           find . -type l | while read L; do
             if [ ! -e "$L" ]; then
@@ -60,6 +60,9 @@ jobs:
                 mkdir -p "$(dirname "$F")"; touch "$F"
               fi
             done
+          # kernel/Makefile 里 sched_assist 是无条件 obj-y（#ifdef 只是注释），
+          # 改为 CONFIG 控制（真机无此特性 => 不编译）
+          sed -i 's|^obj-y += sched_assist/|obj-$(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) += sched_assist/|' kernel/Makefile
           # 关闭 OPLUS 特性宏（华为 BSP 无这些特性，关闭后 task_struct 等布局更接近真机）
           sed -i '/^ALLOWED_MCROS :=/,/^$/d' OplusKernelEnvConfig.mk
           sed -i '/^OPLUS_FEATURE_[A-Z0-9_]*$/d' OplusKernelEnvConfig.mk
@@ -79,7 +82,8 @@ jobs:
           grep -E "^CONFIG_(LOCALVERSION|MODULES|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|SCHED_ASSIST)" .config
       - name: Build vmlinux
         run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-12-
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes"
           make -j$(nproc) vmlinux
       - name: Check System.map
         run: |
