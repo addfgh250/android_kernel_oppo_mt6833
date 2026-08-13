@@ -22,10 +22,14 @@ jobs:
       - name: Prepare config
         run: |
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          # OPPO 官方仓库存在断链 symlink (vendor/oplus 未开源)，修复之
-          if [ -L kernel/sched_assist ] || [ -f kernel/sched_assist ]; then rm -f kernel/sched_assist; fi
-          mkdir -p kernel/sched_assist
-          touch kernel/sched_assist/Kconfig
+          # OPPO 官方仓库存在大量断链 symlink (vendor/oplus 未开源)，批量修复：
+          # 断链 -> 同名目录 + 空 Kconfig（华为 config 无 OPLUS 选项，不会引用其源码）
+          find . -type l | while read L; do
+            if [ ! -e "$L" ]; then
+              echo "fix broken symlink: $L"
+              rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
+            fi
+          done
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
           make olddefconfig
           echo "--- key config ---"
