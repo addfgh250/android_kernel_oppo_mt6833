@@ -71,6 +71,11 @@ jobs:
           sed -i 's/^KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/#KBUILD_CPPFLAGS += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_KERNEL += -DOPLUS_FEATURE_/#CFLAGS_KERNEL += -DOPLUS_FEATURE_/' Makefile
           sed -i 's/^CFLAGS_MODULE += -DOPLUS_FEATURE_/#CFLAGS_MODULE += -DOPLUS_FEATURE_/' Makefile
+          echo "=== A/B: OPPO official defconfig ==="
+          cp arch/arm64/configs/k6833v1_64_defconfig .config
+          make olddefconfig >/dev/null 2>&1 || true
+          grep -E "CONFIG_(MACH_MT6833|ARCH_MEDIATEK)" .config || echo "(MACH_MT6833 MISSING with official defconfig)"
+          echo "=== A/B: huawei wiko defconfig ==="
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
           # 华为树里 MACH_MT6833 不依赖 ARCH_MEDIATEK，但 OPPO 树依赖。
           # 强制开 ARCH_MEDIATEK 让 MACH_MT6833 可见（语义上真机就是 MTK 平台）
