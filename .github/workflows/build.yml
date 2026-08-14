@@ -58,6 +58,19 @@ jobs:
           # swpm：common.h 尖括号引用 mtk_swpm_platform.h，头在 mt6833 子目录但 -I 没生效
           # 拷到 include/swpm_v1/ 同目录（通用规则随后把尖括号转引号）
           cp drivers/misc/mediatek/base/power/swpm_v1/mt6833/mtk_swpm_platform.h drivers/misc/mediatek/base/power/include/swpm_v1/ 2>/dev/null || true
+          # types.h 被 OPPO 剥离了裸 u64/s64 typedef（4.14 原版有），CONFIG_ARCH_DMA_ADDR_T_64BIT=y 时必炸
+          python3 - << 'PYTYPES'
+          import re
+          p = 'include/linux/types.h'
+          c = open(p).read()
+          if 'typedef __u64 u64;' not in re.sub(r'\s+', ' ', c):
+              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)',
+                             r'\1\ntypedef __u64 u64;\ntypedef __s64 s64;', c, count=1)
+              open(p, 'w').write(c)
+              print('types.h u64/s64 restored:', n)
+          else:
+              print('types.h already has u64')
+          PYTYPES
           # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6853/
