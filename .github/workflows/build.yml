@@ -222,6 +222,10 @@ jobs:
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
+      - name: SSH 调试会话（tmate）
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
       - name: Build vmlinux
         run: |
           echo "--- tree check ---"
