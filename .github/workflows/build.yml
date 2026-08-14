@@ -44,6 +44,8 @@ jobs:
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/foreground_io_opt/trace/foreground_io_opt_trace.h" include/trace/
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/sched_assist/sched_assist_trace.h" include/trace/
           cp drivers/gpu/drm/mediatek/mtk_layer_layout_trace.h include/trace/
+          # mtk_iommu_ext.h 参考树才有(MT6853 私有)，mach/mt_iommu.h 以 <...> 引用，需放到标准 -I 路径
+          cp drivers/iommu/mtk_iommu_ext.h drivers/misc/mediatek/include/mt-plat/mt6853/include/ 2>/dev/null || true
           # gcc-12 对 gnu89 inline 语义变化：声明+定义都去掉 inline（最稳）
           # 注意：sed 每次从原始仓库文件开始，pattern 必须匹配原始内容
           sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
