@@ -99,11 +99,21 @@ jobs:
           open(p, 'w').write(c)
           PYAMP
           # helio-dvfsrc-v3 目录：所有本地头尖括号 include -> 引号
-          # （gcc 对 <> 不搜当前目录；opp.h 在父目录且 -I 已覆盖，转引号后仍能解析）
-          grep -rlE '#include <(helio-dvfsrc|mtk_dvfsrc)[^>]*>' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
-            sed -iE 's|#include <((helio-dvfsrc|mtk_dvfsrc)[^>]*)>|#include "\1"|' "$F"
+          # 坑：sed 的 s 命令用 | 做分隔符时正则里不能再有 |（会被误当分隔符，静默不匹配），
+          # 所以拆成两条纯 BRE 替换，不用 ERE 交替；-i 不加 E（-iE 会把 E 当备份后缀）
+          grep -rl '#include <helio-dvfsrc' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
+            sed -i 's|#include <helio-dvfsrc\([^>]*\)>|#include "helio-dvfsrc\1"|' "$F"
             echo "fixed: $F"
           done
+          grep -rl '#include <mtk_dvfsrc' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
+            sed -i 's|#include <mtk_dvfsrc\([^>]*\)>|#include "mtk_dvfsrc\1"|' "$F"
+            echo "fixed: $F"
+          done
+          # 校验：残留的尖括号本地头 include 直接报错，防止静默失败
+          if grep -rnE '#include <(helio-dvfsrc|mtk_dvfsrc)' drivers/devfreq/helio-dvfsrc-v3/; then
+            echo "ERROR: residual angle includes remain"
+            exit 1
+          fi
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
