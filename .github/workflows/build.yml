@@ -46,6 +46,9 @@ jobs:
           cp drivers/gpu/drm/mediatek/mtk_layer_layout_trace.h include/trace/
           # mtk_iommu_ext.h 参考树才有(MT6853 私有)，mach/mt_iommu.h 以 <...> 引用，需放到标准 -I 路径
           cp drivers/iommu/mtk_iommu_ext.h drivers/misc/mediatek/include/mt-plat/mt6853/include/ 2>/dev/null || true
+          # auxadc 的 mt6833 平台目录被官方仓库剥离：用 mt6765 同族版补位
+          mkdir -p drivers/misc/mediatek/auxadc/mt6833
+          cp drivers/misc/mediatek/auxadc/mt6765/mtk_auxadc_hw.h drivers/misc/mediatek/auxadc/mt6833/
           # gcc-12 对 gnu89 inline 语义变化：声明+定义都去掉 inline（最稳）
           # 注意：sed 每次从原始仓库文件开始，pattern 必须匹配原始内容
           sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
