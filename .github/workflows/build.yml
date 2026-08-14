@@ -68,7 +68,8 @@ jobs:
           missing = [t for t in need if ('typedef __' + t + ' ' + t + ';') not in flat]
           if missing:
               block = '\n'.join('typedef __%s %s;' % (t, t) for t in missing)
-              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)', '\1\n' + block.replace('\\', '\\\\'), c, count=1)
+              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)',
+                             lambda m: m.group(1) + '\n' + block, c, count=1)
               open(p, 'w').write(c)
               print('types.h typedefs restored:', missing, 'n=', n)
           else:
