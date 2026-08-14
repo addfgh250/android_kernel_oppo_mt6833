@@ -55,6 +55,9 @@ jobs:
           sed -i 's|ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA/$(MMC_FOLDER)|ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA\nccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA/$(MMC_FOLDER)|' drivers/mmc/host/mediatek/ComboA/Makefile
           # ppm：mtk_ppm_internal.h(inc/) 引号 include mtk_ppm_platform.h → 同目录必须有，拷进 inc/ 最稳
           cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/inc/ 2>/dev/null || true
+          # swpm：common.h 尖括号引用 mtk_swpm_platform.h，头在 mt6833 子目录但 -I 没生效
+          # 拷到 include/swpm_v1/ 同目录（通用规则随后把尖括号转引号）
+          cp drivers/misc/mediatek/base/power/swpm_v1/mt6833/mtk_swpm_platform.h drivers/misc/mediatek/base/power/include/swpm_v1/ 2>/dev/null || true
           # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6853/
