@@ -142,6 +142,40 @@ jobs:
                       print('fixed: %s' % p)
           print('total fixed files:', total)
           PYINC
+          # ppm_v3 的 mt6853 平台头被剥离：用 mt6785 同族版补位（mt6833 也补一份）
+          cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6853/
+          cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6833/ 2>/dev/null || true
+          # 通用规则：平台子目录引用父目录头（同目录没有、父目录有）→ 拷进同目录 + 尖括号转引号
+          python3 - << 'PYPP'
+          import os, re, shutil
+          pat = re.compile(r'#include\s*[<"]([^/>]+\.h)[>"]')
+          fixed = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      c = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      h = m.group(1)
+                      dst = os.path.join(root, h)
+                      pp = os.path.join(os.path.dirname(root), h)
+                      if not os.path.exists(dst) and os.path.exists(pp):
+                          shutil.copyfile(pp, dst)
+                          print('parent-copied:', pp, '->', dst)
+                      if m.group(0).startswith('#include <') and os.path.exists(dst):
+                          return '#include "%s"' % h
+                      return m.group(0)
+                  out = pat.sub(repl, c)
+                  if out != c:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      fixed += 1
+          print('parent-include fixed files:', fixed)
+          PYPP
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
