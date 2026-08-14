@@ -63,13 +63,16 @@ jobs:
           import re
           p = 'include/linux/types.h'
           c = open(p).read()
-          if 'typedef __u64 u64;' not in re.sub(r'\s+', ' ', c):
-              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)',
-                             r'\1\ntypedef __u64 u64;\ntypedef __s64 s64;', c, count=1)
+          flat = re.sub(r'\s+', ' ', c)
+          need = ['u64', 's64', 'u32', 's32', 'u16', 's16', 'u8', 's8']
+          missing = [t for t in need if ('typedef __' + t + ' ' + t + ';') not in flat]
+          if missing:
+              block = '\n'.join('typedef __%s %s;' % (t, t) for t in missing)
+              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)', '\1\n' + block.replace('\\', '\\\\'), c, count=1)
               open(p, 'w').write(c)
-              print('types.h u64/s64 restored:', n)
+              print('types.h typedefs restored:', missing, 'n=', n)
           else:
-              print('types.h already has u64')
+              print('types.h typedefs complete')
           PYTYPES
           # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
