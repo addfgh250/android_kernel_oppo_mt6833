@@ -43,6 +43,7 @@ jobs:
           mkdir -p include/trace
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/foreground_io_opt/trace/foreground_io_opt_trace.h" include/trace/
           cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/sched_assist/sched_assist_trace.h" include/trace/
+          cp drivers/gpu/drm/mediatek/mtk_layer_layout_trace.h include/trace/
           # gcc-12 对 gnu89 inline 语义变化：声明+定义都去掉 inline（最稳）
           # 注意：sed 每次从原始仓库文件开始，pattern 必须匹配原始内容
           sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
@@ -98,22 +99,36 @@ jobs:
           c = c[:idx] + stub + c[idx:]
           open(p, 'w').write(c)
           PYAMP
-          # helio-dvfsrc-v3 目录：所有本地头尖括号 include -> 引号
-          # 坑：sed 的 s 命令用 | 做分隔符时正则里不能再有 |（会被误当分隔符，静默不匹配），
-          # 所以拆成两条纯 BRE 替换，不用 ERE 交替；-i 不加 E（-iE 会把 E 当备份后缀）
-          grep -rl '#include <helio-dvfsrc' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
-            sed -i 's|#include <helio-dvfsrc\([^>]*\)>|#include "helio-dvfsrc\1"|' "$F"
-            echo "fixed: $F"
-          done
-          grep -rl '#include <mtk_dvfsrc' drivers/devfreq/helio-dvfsrc-v3/ | while read F; do
-            sed -i 's|#include <mtk_dvfsrc\([^>]*\)>|#include "mtk_dvfsrc\1"|' "$F"
-            echo "fixed: $F"
-          done
-          # 校验：残留的尖括号本地头 include 直接报错，防止静默失败
-          if grep -rnE '#include <(helio-dvfsrc|mtk_dvfsrc)' drivers/devfreq/helio-dvfsrc-v3/; then
-            echo "ERROR: residual angle includes remain"
-            exit 1
-          fi
+          # 通用修复：尖括号 include 引用同目录头（gcc 对 <> 不搜当前目录，OPPO/MTK 代码通病）
+          # 全树扫描：无路径前缀的 #include <xxx.h> 且同目录存在该头 -> 转引号
+          # 用 python 正则做，规避 sed 分隔符/ERE 的静默不匹配坑
+          python3 - << 'PYINC'
+          import os, re
+          pat = re.compile(r'#include\s*<([^/>]+\.h)>')
+          total = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      with open(p, encoding='utf-8', errors='surrogateescape') as f:
+                          c = f.read()
+                  except OSError:
+                      continue
+                  out = pat.sub(
+                      lambda m: ('#include "%s"' % m.group(1))
+                                if os.path.exists(os.path.join(root, m.group(1)))
+                                else m.group(0),
+                      c)
+                  if out != c:
+                      with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                          f.write(out)
+                      total += 1
+                      print('fixed: %s' % p)
+          print('total fixed files:', total)
+          PYINC
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
