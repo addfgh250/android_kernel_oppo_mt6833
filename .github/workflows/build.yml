@@ -74,6 +74,9 @@ jobs:
               print('types.h typedefs restored:', missing, 'n=', n)
           else:
               print('types.h typedefs complete')
+          # 今晚现场修复固化：OPPO 剥离了 types.h 的 stddef 链（offsetof 断供）和 uuid.h 的 string.h（memcmp/memcpy）
+          sed -i 's|#include <uapi/linux/types.h>|#include <uapi/linux/types.h>\n#include <linux/stddef.h>|' include/linux/types.h
+          sed -i 's|#include <uapi/linux/uuid.h>|#include <uapi/linux/uuid.h>\n#include <linux/string.h>|' include/linux/uuid.h
           PYTYPES
           # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
@@ -222,10 +225,6 @@ jobs:
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
-      - name: SSH 调试会话（tmate）
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
       - name: Build vmlinux
         run: |
           echo "--- tree check ---"
