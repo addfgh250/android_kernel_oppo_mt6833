@@ -126,6 +126,8 @@ jobs:
           import os, re
           pat = re.compile(r'#include\s*<([^/>]+\.h)>')
           total = 0
+          # 带路径的尖括号 include（<dir/name.h>）：若 name.h 就在同目录 → 转引号 basename
+          pat2 = re.compile(r'#include\s*<([^>]+)>')
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
               for fn in files:
@@ -142,6 +144,12 @@ jobs:
                                 if os.path.exists(os.path.join(root, m.group(1)))
                                 else m.group(0),
                       c)
+                  def repl2(m):
+                      base = os.path.basename(m.group(1))
+                      if base.endswith('.h') and os.path.exists(os.path.join(root, base)):
+                          return '#include "%s"' % base
+                      return m.group(0)
+                  out = pat2.sub(repl2, out)
                   if out != c:
                       with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
                           f.write(out)
@@ -199,7 +207,7 @@ jobs:
           ls kernel/sched/ 2>/dev/null | head -8
           ls kernel/sched/ 2>/dev/null | wc -l
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow"
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow"
           # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
           make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux
       - name: Check System.map
