@@ -180,7 +180,7 @@ jobs:
           PYPP
           done
           # trace 头全量搬运到 include/trace/（define_trace.h 以 <trace/xxx.h> 引用）
-          find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' \) -exec cp {} include/trace/ \; 2>/dev/null || true
+          find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' \) ! -name 'trace_events.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
           ls include/trace/ | head -20
           make olddefconfig
           echo "--- key config ---"
