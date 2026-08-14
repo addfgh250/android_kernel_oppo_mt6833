@@ -145,8 +145,10 @@ jobs:
           # ppm_v3 的 mt6853 平台头被剥离：用 mt6785 同族版补位（mt6833 也补一份）
           cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6853/
           cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6833/ 2>/dev/null || true
-          # 通用规则：平台子目录引用父目录头（同目录没有、父目录有）→ 拷进同目录 + 尖括号转引号
-          python3 - << 'PYPP'
+          # 通用规则（循环跑直到稳定）：子目录引用的父目录头 → 拷进子目录 + 尖括号转引号
+          # 拷贝过去的头自身还会引用更多父目录头，所以要迭代多轮
+          for round in 1 2 3 4 5; do
+            python3 - << 'PYPP'
           import os, re, shutil
           pat = re.compile(r'#include\s*[<"]([^/>]+\.h)[>"]')
           fixed = 0
@@ -176,6 +178,10 @@ jobs:
                       fixed += 1
           print('parent-include fixed files:', fixed)
           PYPP
+          done
+          # trace 头全量搬运到 include/trace/（define_trace.h 以 <trace/xxx.h> 引用）
+          find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' \) -exec cp {} include/trace/ \; 2>/dev/null || true
+          ls include/trace/ | head -20
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
