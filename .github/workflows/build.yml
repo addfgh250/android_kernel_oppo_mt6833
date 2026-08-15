@@ -358,13 +358,21 @@ jobs:
           import os, re, shutil
           pat = re.compile(r'#include\s*[<"]([^/>]+\.h)[>"]')
           # 全树头索引（basename -> [paths]），父链找不到时唯一命中才拷
+          # 排除其他架构（powerpc 假头污染）和 C 标准头名（gcc 自带）
+          SYS_HEAD_BLACKLIST = {'stdbool.h', 'stdint.h', 'stddef.h', 'stdio.h',
+                                'stdlib.h', 'string.h', 'types.h', 'limits.h',
+                                'errno.h', 'unistd.h', 'fcntl.h'}
           index = {}
           for r2, d2, f2 in os.walk('.'):
               d2[:] = [x for x in d2 if x != '.git']
               if r2.startswith(('./scripts', './tools', './usr')):
                   continue
+              if r2.startswith('./arch') and 'arm64' not in r2:
+                  continue
+              if r2.startswith('./Documentation'):
+                  continue
               for f2 in f2:
-                  if f2.endswith('.h'):
+                  if f2.endswith('.h') and f2 not in SYS_HEAD_BLACKLIST:
                       index.setdefault(f2, []).append(os.path.join(r2, f2))
           fixed = 0
           for root, dirs, files in os.walk('.'):
