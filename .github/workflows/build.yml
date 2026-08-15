@@ -340,10 +340,15 @@ jobs:
                   def repl(m):
                       h = m.group(1)
                       dst = os.path.join(root, h)
-                      pp = os.path.join(os.path.dirname(root), h)
-                      if not os.path.exists(dst) and os.path.exists(pp):
-                          shutil.copyfile(pp, dst)
-                          print('parent-copied:', pp, '->', dst)
+                      if not os.path.exists(dst):
+                          pdir = os.path.dirname(root)
+                          while pdir and os.path.dirname(pdir) != pdir:
+                              cand = os.path.join(pdir, h)
+                              if os.path.exists(cand):
+                                  shutil.copyfile(cand, dst)
+                                  print('parent-copied:', cand, '->', dst)
+                                  break
+                              pdir = os.path.dirname(pdir)
                       if m.group(0).startswith('#include <') and os.path.exists(dst):
                           return '#include "%s"' % h
                       return m.group(0)
@@ -364,6 +369,8 @@ jobs:
           find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' -o -name 'trace_*.h' \) ! -name 'trace_events.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
           # define_trace.h 按 TRACE_INCLUDE_PATH ./inc 解析 -> 需要 include/trace/inc/
           cp -rn drivers/misc/mediatek/cameraisp/src/mt6853/inc include/trace/
+          # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
+          cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
           # ufs-mtk-trace.h 同款问题（define_trace.h ./ 解析），显式补拷 + 诊断
           cp -n drivers/scsi/ufs/ufs-mtk-trace.h include/trace/ 2>/dev/null || true
           ls include/trace/ | grep -iE "ufs|inc" || echo "UFS TRACE MISSING"
