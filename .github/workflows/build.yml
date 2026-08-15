@@ -531,8 +531,7 @@ jobs:
           sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
           sed -i 's/extern oplus_task_sched_boost(/extern void oplus_task_sched_boost(/' drivers/misc/mediatek/sched/sched_ctl.c
           # oplus typec: patch 引用了 struct 里被剥离的 sbu_en_work 成员 -> 补成员
-          sed -i 's|	struct delayed_work poll_work;|	struct delayed_work poll_work;
-	struct delayed_work sbu_en_work;|' drivers/misc/mediatek/typec/tcpc/tcpc_mt6360.c 2>/dev/null || true
+          sed -i 's|\tstruct delayed_work poll_work;|\tstruct delayed_work poll_work;\n\tstruct delayed_work sbu_en_work;|' drivers/misc/mediatek/typec/tcpc/tcpc_mt6360.c 2>/dev/null || true
           # oplus sensor: 原型1参数 vs 定义0参数 的代码 bug，定义补参数
           sed -i 's/int register_lcdinfo_notifier() {/int register_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
           sed -i 's/int unregister_lcdinfo_notifier() {/int unregister_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
