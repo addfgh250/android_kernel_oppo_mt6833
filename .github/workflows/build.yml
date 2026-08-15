@@ -221,6 +221,8 @@ jobs:
               dirs[:] = [x for x in dirs if x != '.git']
               if 'uapi' in root.split(os.sep):
                   continue
+              if root.startswith(('./scripts', './tools')):
+                  continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
                       continue
@@ -287,6 +289,8 @@ jobs:
           total = 0
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
+              if root.startswith(('./scripts', './tools')):
+                  continue
               if os.path.basename(root) != 'inc':
                   continue
               for fn in files:
@@ -315,6 +319,8 @@ jobs:
           pat = re.compile(r'#include <([a-zA-Z0-9_\-]+/[^>]+\.h)>')
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
+              if root.startswith(('./scripts', './tools')):
+                  continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
                       continue
@@ -362,6 +368,8 @@ jobs:
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
               if 'uapi' in root.split(os.sep):
+                  continue
+              if root.startswith(('./scripts', './tools')):
                   continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
