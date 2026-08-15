@@ -408,6 +408,29 @@ jobs:
           # lpm suspend 子目录引父目录头（mt6833.h -> mt6833_common.h 连锁），全量塞
           cp -n drivers/misc/mediatek/lpm/modules/platform/mt6833/*.h drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ 2>/dev/null || true
           cp -n drivers/misc/mediatek/lpm/modules/platform/mt6853/*.h drivers/misc/mediatek/lpm/modules/platform/mt6853/suspend/ 2>/dev/null || true
+          # 官方 suspend 头用尖括号引同目录头，拷完后必须转引号（尖括号不搜同目录）
+          python3 - << 'PYSUS'
+          import os, re
+          pat = re.compile(r'#include\s*<([^/>]+\.h)>')
+          for d in ['drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend',
+                    'drivers/misc/mediatek/lpm/modules/platform/mt6853/suspend']:
+              if not os.path.isdir(d):
+                  continue
+              for fn in sorted(os.listdir(d)):
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(d, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  out = pat.sub(lambda m: ('#include "%s"' % m.group(1))
+                                if os.path.exists(os.path.join(d, m.group(1)))
+                                else m.group(0), cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      print('suspend-fixed:', p)
+          PYSUS
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
           # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
           cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
