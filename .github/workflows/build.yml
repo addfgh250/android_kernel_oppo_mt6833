@@ -30,6 +30,11 @@ jobs:
           # symlink target 是 ../../vendor/... → 目标是工作区上级的兄弟目录
           mkdir -p "$GITHUB_WORKSPACE/../vendor"
           cp -r vendor/oplus "$GITHUB_WORKSPACE/../vendor/"
+          # 也有 symlink 用 ../../../vendor/...（工作区内，如 drivers/power/oplus），两处都放
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/vendor/"
+          # oplus 头用 ../../../../kernel-4.14 引用（OPLUS 原布局名），kernel_4.14 补软链
+          ln -sfn oplus/kernel_4.14 "$GITHUB_WORKSPACE/vendor/kernel-4.14"
           # 用参考树补官方 repo 硬缺失的文件/symlink（-n 不覆盖已有）
           cp -rn 4.14.186/. "$GITHUB_WORKSPACE/"
           cd "$GITHUB_WORKSPACE"
@@ -121,6 +126,60 @@ jobs:
               fi
             done
           cp arch/arm64/configs/wiko_gar_an60_defconfig .config
+          # charger 头 else 分支是高通 msm8976（vendor 缺失），强制走 MTK6833 分支
+          echo "CONFIG_OPLUS_CHARGER_MTK=y" >> .config
+          echo "CONFIG_OPLUS_CHARGER_MTK6833=y" >> .config
+          # OPLUS 剥离了 linux/wakelock.h（4.14 上游无此头，Android 生态头）-> wakeup_source shim
+          cat > include/linux/wakelock.h << 'WAKELOCKEOF'
+          #ifndef _LINUX_WAKELOCK_H
+          #define _LINUX_WAKELOCK_H
+
+          #include <linux/jiffies.h>
+          #include <linux/pm_wakeup.h>
+
+          enum {
+          	WAKE_LOCK_SUSPEND,
+          	WAKE_LOCK_IDLE,
+          	WAKE_LOCK_TYPE_COUNT
+          };
+
+          struct wake_lock {
+          	struct wakeup_source ws;
+          };
+
+          static inline void wake_lock_init(struct wake_lock *lock, int type,
+          				  const char *name)
+          {
+          	wakeup_source_init(&lock->ws, name);
+          }
+
+          static inline void wake_lock_destroy(struct wake_lock *lock)
+          {
+          	wakeup_source_trash(&lock->ws);
+          }
+
+          static inline void wake_lock(struct wake_lock *lock)
+          {
+          	__pm_stay_awake(&lock->ws);
+          }
+
+          static inline void wake_lock_timeout(struct wake_lock *lock, long timeout)
+          {
+          	__pm_wakeup_event(&lock->ws, jiffies_to_msecs(timeout));
+          }
+
+          static inline void wake_unlock(struct wake_lock *lock)
+          {
+          	__pm_relax(&lock->ws);
+          }
+
+          static inline int wake_lock_active(struct wake_lock *lock)
+          {
+          	return lock->ws.active;
+          }
+
+          #endif
+          WAKELOCKEOF
           # 模块签名密钥：华为私有 pem 不存在，清空（不影响符号偏移）
           sed -i 's/^CONFIG_MODULE_SIG_KEY=.*/CONFIG_MODULE_SIG_KEY=""/' .config
           # 真机无 HYBRIDSWAP，关掉避免 zram_drv.h 重复字段（OPPO Kconfig 默认开）
@@ -192,6 +251,33 @@ jobs:
                       print('fixed: %s' % p)
           print('total fixed files:', total)
           PYINC
+          # 尖括号相对路径 include（<../xx.h>）gcc 按 cwd 解析必炸 -> 转引号（相对源文件目录）
+          python3 - << 'PYINC2'
+          import os, re
+          pat = re.compile(r'#include <(\.\./[^>]+\.h)>')
+          total = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      dst = os.path.normpath(os.path.join(root, m.group(1)))
+                      if os.path.exists(dst):
+                          return '#include "%s"' % m.group(1)
+                      return m.group(0)
+                  out = pat.sub(repl, cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      total += 1
+                      print('relative-include fixed:', p)
+          print('relative-include total:', total)
+          PYINC2
           # ppm_v3 的 mt6853 平台头被剥离：用 mt6785 同族版补位（mt6833 也补一份）
           cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6853/
           cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6833/ 2>/dev/null || true
@@ -244,7 +330,7 @@ jobs:
           ls kernel/sched/ 2>/dev/null | head -8
           ls kernel/sched/ 2>/dev/null | wc -l
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow"
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable"
           # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
           make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux
       - name: Check System.map
