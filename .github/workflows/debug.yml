@@ -369,13 +369,13 @@ jobs:
           echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZAH1PORrbuj/cAC67lJ8GWMfLPbF/2snKDzo1fh4cH termux" | sudo tee /root/.ssh/authorized_keys
           sudo chmod 600 /root/.ssh/authorized_keys
           curl -sL -o /tmp/cf https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /tmp/cf
-          nohup /tmp/cf tunnel --url tcp://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
+          nohup /tmp/cf tunnel --url ssh://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
           sleep 10
           URL=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
           echo "tunnel url: $URL"
           curl -s -X POST -H "Authorization: token $PAT" -H "Accept: application/vnd.github+json" \
             https://api.github.com/gists \
-            -d "{\"description\":\"wiko kernel debug direct\",\"public\":false,\"files\":{\"direct_addr\":{\"content\":\"ssh -i ~/.ssh/id_ed25519 -p 443 root@$URL\"}}}"
+            -d "{\"description\":\"wiko kernel debug direct\",\"public\":false,\"files\":{\"direct_addr\":{\"content\":\"ssh -i ~/.ssh/id_ed25519 root@$URL\n(if 22 blocked) ssh -i ~/.ssh/id_ed25519 -p 443 root@$URL\"}}}"
           echo "address published to gist"
           sleep 300m
 
