@@ -463,7 +463,7 @@ jobs:
           PYSUS
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
           # TEE 私有头（公开仓库剥离）：从 Asgore 完整树拉全套 GP 头
-          for H in tee_client_api tee_client_api_cust tee_client_api_imp tee_client_types; do
+          for H in tee_client_api tee_client_api_cust tee_client_api_imp tee_client_types tee_client_error; do
             curl -sL -o include/$H.h https://raw.githubusercontent.com/Asgore-Dreemur/kernel_oppo_mt6833/main/drivers/misc/mediatek/gud/500/MobiCoreDriver/public/GP/$H.h 2>/dev/null || true
           done
           ls -la include/tee_client*.h 2>&1 | head -6
