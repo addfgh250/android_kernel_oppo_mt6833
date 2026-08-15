@@ -352,6 +352,12 @@ jobs:
           print('parent-include fixed files:', fixed)
           PYPP
           done
+          # PYPP 把 ion/ion.h 拷进 mtk/ 后，其 ../uapi/ion.h 相对引用指向 ion/uapi/ → 补一份
+          mkdir -p drivers/staging/android/ion/uapi
+          cp drivers/staging/android/uapi/ion.h drivers/staging/android/ion/uapi/ 2>/dev/null || true
+          # ufs-mtk-platform.{c,h} 引用两层之上的 ufs.h/ufshcd.h → 改相对路径
+          sed -i 's|#include "ufs.h"|#include "../../ufs.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
+          sed -i 's|#include "ufshcd.h"|#include "../../ufshcd.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
           # trace 头全量搬运到 include/trace/（define_trace.h 以 <trace/xxx.h> 引用）
           find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' -o -name 'trace_*.h' \) ! -name 'trace_events.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
           # define_trace.h 按 TRACE_INCLUDE_PATH ./inc 解析 -> 需要 include/trace/inc/
