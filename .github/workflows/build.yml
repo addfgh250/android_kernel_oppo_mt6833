@@ -462,6 +462,10 @@ jobs:
                       print('suspend-fixed:', p)
           PYSUS
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
+          # TEE 私有头（公开仓库剥离）：从 Asgore 完整树拉
+          curl -sL -o include/tee_client_api.h https://raw.githubusercontent.com/Asgore-Dreemur/kernel_oppo_mt6833/main/drivers/misc/mediatek/gud/500/MobiCoreDriver/public/GP/tee_client_api.h 2>/dev/null || true
+          curl -sL -o include/tee_client_api_imp.h https://raw.githubusercontent.com/Asgore-Dreemur/kernel_oppo_mt6833/main/drivers/misc/mediatek/gud/500/MobiCoreDriver/public/GP/tee_client_api_imp.h 2>/dev/null || true
+          ls -la include/tee_client_api*.h 2>&1 | head -3
           # 跨子树引用兜底（PYPP 全树索引是唯一命中才拷，这里显式保底）
           cp -f drivers/misc/mediatek/mmdvfs/mmdvfs_pmqos.h drivers/gpu/drm/mediatek/ 2>/dev/null || true
           cp -f drivers/misc/mediatek/mdp/mt6833/mdp_engine.h drivers/misc/mediatek/mdp/ 2>/dev/null || true
