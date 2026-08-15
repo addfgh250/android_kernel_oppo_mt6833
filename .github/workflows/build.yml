@@ -221,7 +221,7 @@ jobs:
               dirs[:] = [x for x in dirs if x != '.git']
               if 'uapi' in root.split(os.sep):
                   continue
-              if root.startswith(('./scripts', './tools')):
+              if root.startswith(('./scripts', './tools', './usr')):
                   continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
@@ -289,7 +289,7 @@ jobs:
           total = 0
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
-              if root.startswith(('./scripts', './tools')):
+              if root.startswith(('./scripts', './tools', './usr')):
                   continue
               if os.path.basename(root) != 'inc':
                   continue
@@ -319,7 +319,7 @@ jobs:
           pat = re.compile(r'#include <([a-zA-Z0-9_\-]+/[^>]+\.h)>')
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
-              if root.startswith(('./scripts', './tools')):
+              if root.startswith(('./scripts', './tools', './usr')):
                   continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
@@ -361,6 +361,8 @@ jobs:
           index = {}
           for r2, d2, f2 in os.walk('.'):
               d2[:] = [x for x in d2 if x != '.git']
+              if r2.startswith(('./scripts', './tools', './usr')):
+                  continue
               for f2 in f2:
                   if f2.endswith('.h'):
                       index.setdefault(f2, []).append(os.path.join(r2, f2))
@@ -369,7 +371,7 @@ jobs:
               dirs[:] = [x for x in dirs if x != '.git']
               if 'uapi' in root.split(os.sep):
                   continue
-              if root.startswith(('./scripts', './tools')):
+              if root.startswith(('./scripts', './tools', './usr')):
                   continue
               for fn in files:
                   if not fn.endswith(('.c', '.h')):
