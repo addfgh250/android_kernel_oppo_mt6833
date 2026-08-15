@@ -309,6 +309,8 @@ jobs:
           # ccu_ext_interface 尖括号自引用：保险起见显式转引号（诊断+兜底）
           grep -n "ccu_ext_interface.h" drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/ccu_mailbox_extif.h || true
           sed -i 's|#include <ccu_ext_interface/ccu_ext_interface.h>|#include "ccu_ext_interface.h"|' drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/*.h
+          # ccu_mailbox_extif.h 引号自引用仍带目录前缀 -> 去前缀（同目录直接 basename，只改本目录内文件）
+          sed -i 's|#include "ccu_ext_interface/\([^"]*\)"|#include "\1"|' drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/*.h
           # mtk_battery.c 用了 IMM_ API 但没 include 声明（mtk_auxadc.h 有 extern，Makefile 无 -I auxadc）
           sed -i 's|#include <mtk_gauge_class.h>|#include <mtk_gauge_class.h>\nextern int IMM_IsAdcInitReady(void);\nextern int IMM_GetOneChannelValue(int dwChannel, int data[4], int *rawdata);|' drivers/power/supply/mediatek/battery/mtk_battery.c
           # ppm_v3 的 mt6853 平台头被剥离：用 mt6785 同族版补位（mt6833 也补一份）
