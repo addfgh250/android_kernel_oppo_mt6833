@@ -351,6 +351,13 @@ jobs:
             python3 - << 'PYPP'
           import os, re, shutil
           pat = re.compile(r'#include\s*[<"]([^/>]+\.h)[>"]')
+          # 全树头索引（basename -> [paths]），父链找不到时唯一命中才拷
+          index = {}
+          for r2, d2, f2 in os.walk('.'):
+              d2[:] = [x for x in d2 if x != '.git']
+              for f2 in f2:
+                  if f2.endswith('.h'):
+                      index.setdefault(f2, []).append(os.path.join(r2, f2))
           fixed = 0
           for root, dirs, files in os.walk('.'):
               dirs[:] = [x for x in dirs if x != '.git']
@@ -376,6 +383,11 @@ jobs:
                                   print('parent-copied:', cand, '->', dst)
                                   break
                               pdir = os.path.dirname(pdir)
+                          if not os.path.exists(dst):
+                              cands = index.get(h, [])
+                              if len(cands) == 1 and os.path.exists(cands[0]):
+                                  shutil.copyfile(cands[0], dst)
+                                  print('index-copied:', cands[0], '->', dst)
                       if m.group(0).startswith('#include <') and os.path.exists(dst):
                           return '#include "%s"' % h
                       return m.group(0)
@@ -432,6 +444,9 @@ jobs:
                       print('suspend-fixed:', p)
           PYSUS
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
+          # 跨子树引用兜底（PYPP 全树索引是唯一命中才拷，这里显式保底）
+          cp -n drivers/misc/mediatek/mmdvfs/mmdvfs_pmqos.h drivers/gpu/drm/mediatek/ 2>/dev/null || true
+          cp -n drivers/misc/mediatek/mdp/mt6833/mdp_engine.h drivers/misc/mediatek/mdp/ 2>/dev/null || true
           # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
           cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
           # ufs-mtk-trace.h 同款问题（define_trace.h ./ 解析），显式补拷 + 诊断
