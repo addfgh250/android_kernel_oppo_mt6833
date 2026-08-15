@@ -28,6 +28,11 @@ jobs:
           cd /tmp/k
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=return-type"
+          # OPPO official tree common fixes (minimal set)
+          sed -i 's|#include <\.\./sched/sched\.h>|#include "../sched/sched.h"|' kernel/locking/rwsem.c
+          mkdir -p include/trace
+          find block drivers -type f -name '*_trace.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
+          echo "minimal fixes done"
           make wiko_gar_an60_defconfig 2>&1 | tail -5
           set -o pipefail
           make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux 2>&1 | tee /tmp/build.log
