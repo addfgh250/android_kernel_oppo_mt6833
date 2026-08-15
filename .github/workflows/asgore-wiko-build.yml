@@ -1,0 +1,47 @@
+name: asgore-wiko-build
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu bc bison flex libssl-dev
+
+      - name: Clone Asgore tree
+        run: |
+          git clone --depth 1 https://github.com/Asgore-Dreemur/kernel_oppo_mt6833 /tmp/k
+          echo "tree size: $(du -sh /tmp/k | cut -f1)"
+
+      - name: Fetch wiko defconfig from our repo
+        run: |
+          curl -sL -o /tmp/k/arch/arm64/configs/wiko_gar_an60_defconfig \
+            https://raw.githubusercontent.com/addfgh250/android_kernel_oppo_mt6833/oppo/mt6833_s_12.1_oppo_k10_5g/arch/arm64/configs/wiko_gar_an60_defconfig
+          wc -l /tmp/k/arch/arm64/configs/wiko_gar_an60_defconfig
+
+      - name: Build with wiko defconfig on Asgore tree
+        run: |
+          cd /tmp/k
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=return-type"
+          make wiko_gar_an60_defconfig 2>&1 | tail -5
+          make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux 2>&1 | tail -30
+
+      - name: Check System.map
+        run: |
+          ls -la /tmp/k/System.map
+          head -3 /tmp/k/System.map
+          echo "--- anchor symbols ---"
+          grep -E " (init_task|selinux_state|_stext|_etext|clk_mt6833_probe|swapper_pg_dir)$" /tmp/k/System.map || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: asgore-wiko-systemmap
+          path: |
+            /tmp/k/System.map
+            /tmp/k/.config
