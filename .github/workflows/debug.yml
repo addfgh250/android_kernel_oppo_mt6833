@@ -362,14 +362,16 @@ jobs:
           sudo apt-get install -y -qq openssh-server
           sudo ssh-keygen -A
           sudo mkdir -p /run/sshd
-          sudo /usr/sbin/sshd -p 2222 -o PermitRootLogin=yes -o PasswordAuthentication=no
+          nohup sudo /usr/sbin/sshd -D -e -p 2222 -o PermitRootLogin=yes -o PasswordAuthentication=no -o UsePAM=no -o PidFile=/tmp/sshd.pid > /tmp/sshd.log 2>&1 &
+          sleep 3
+          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep 2222 && echo "sshd listening OK" || echo "SSHD NOT LISTENING"
           sudo mkdir -p /root/.ssh
           echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZAH1PORrbuj/cAC67lJ8GWMfLPbF/2snKDzo1fh4cH termux" | sudo tee /root/.ssh/authorized_keys
           sudo chmod 600 /root/.ssh/authorized_keys
           curl -sL -o /tmp/cf https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /tmp/cf
           nohup /tmp/cf tunnel --url tcp://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
           sleep 10
-          URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+          URL=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
           echo "tunnel url: $URL"
           curl -s -X POST -H "Authorization: token $PAT" -H "Accept: application/vnd.github+json" \
             https://api.github.com/gists \
