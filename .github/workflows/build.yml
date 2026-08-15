@@ -278,6 +278,34 @@ jobs:
                       print('relative-include fixed:', p)
           print('relative-include total:', total)
           PYINC2
+          # inc/ 目录内的头用 "inc/xxx.h" 自引用（如 cam_qos.h -> inc/camera_isp.h）
+          # 引号 include 相对源文件目录解析，inc/inc/ 不存在 -> 目标在同目录时去掉前缀
+          python3 - << 'PYINC3'
+          import os, re
+          total = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              if os.path.basename(root) != 'inc':
+                  continue
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      if os.path.exists(os.path.join(root, m.group(1))):
+                          return '#include "%s"' % m.group(1)
+                      return m.group(0)
+                  out = re.sub(r'#include "inc/([^"]+)"', repl, cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      total += 1
+                      print('inc-prefix fixed:', p)
+          print('inc-prefix total:', total)
+          PYINC3
           # ccu_ext_interface 尖括号自引用：保险起见显式转引号（诊断+兜底）
           grep -n "ccu_ext_interface.h" drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/ccu_mailbox_extif.h || true
           sed -i 's|#include <ccu_ext_interface/ccu_ext_interface.h>|#include "ccu_ext_interface.h"|' drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/*.h
