@@ -29,7 +29,8 @@ jobs:
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=return-type"
           make wiko_gar_an60_defconfig 2>&1 | tail -5
-          make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux 2>&1 | tail -30
+          set -o pipefail
+          make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux 2>&1 | tee /tmp/build.log | tail -30
 
       - name: Check System.map
         run: |
