@@ -445,8 +445,9 @@ jobs:
           PYSUS
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
           # 跨子树引用兜底（PYPP 全树索引是唯一命中才拷，这里显式保底）
-          cp -n drivers/misc/mediatek/mmdvfs/mmdvfs_pmqos.h drivers/gpu/drm/mediatek/ 2>/dev/null || true
-          cp -n drivers/misc/mediatek/mdp/mt6833/mdp_engine.h drivers/misc/mediatek/mdp/ 2>/dev/null || true
+          cp -f drivers/misc/mediatek/mmdvfs/mmdvfs_pmqos.h drivers/gpu/drm/mediatek/ 2>/dev/null || true
+          cp -f drivers/misc/mediatek/mdp/mt6833/mdp_engine.h drivers/misc/mediatek/mdp/ 2>/dev/null || true
+          ls -la drivers/misc/mediatek/mdp/mdp_engine.h drivers/gpu/drm/mediatek/mmdvfs_pmqos.h 2>&1 | head -4
           # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
           cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
           # ufs-mtk-trace.h 同款问题（define_trace.h ./ 解析），显式补拷 + 诊断
