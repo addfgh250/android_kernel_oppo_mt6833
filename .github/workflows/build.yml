@@ -76,7 +76,15 @@ jobs:
               print('types.h typedefs complete')
           PYTYPES
           # 昨晚现场修复固化：OPPO 剥离了 types.h 的 stddef 链（offsetof 断供）和 uuid.h 的 string.h（memcmp/memcpy）
-          sed -i 's|#include <uapi/linux/types.h>|#include <uapi/linux/types.h>\n#include <linux/stddef.h>|' include/linux/types.h
+          # stddef.h 含 enum bool，汇编文件(entry.S 等)也过 types.h，必须 __ASSEMBLY__ 保护
+          python3 - << 'PYSTD'
+          p = 'include/linux/types.h'
+          c = open(p).read()
+          c = c.replace('#include <uapi/linux/types.h>',
+                        '#include <uapi/linux/types.h>\n#ifndef __ASSEMBLY__\n#include <linux/stddef.h>\n#endif', 1)
+          open(p, 'w').write(c)
+          print('stddef.h guarded include added')
+          PYSTD
           sed -i 's|#include <uapi/linux/uuid.h>|#include <uapi/linux/uuid.h>\n#include <linux/string.h>|' include/linux/uuid.h
           # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
           cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
