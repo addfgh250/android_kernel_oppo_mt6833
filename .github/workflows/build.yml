@@ -495,6 +495,10 @@ jobs:
           #endif
           SSPMEOF
           # 链接期缺失符号 stub（vendor 剥离的变量/函数，链接 vmlinux 时 undefined reference）
+          # 追加前确保 Makefile 以换行结尾（OPPO 剥离树部分文件无尾换行，endif 会与追加行粘连成 endifobj-y）
+          for f in drivers/staging/android/ion/Makefile drivers/android/Makefile sound/soc/mediatek/mt6833/Makefile; do
+            sed -i -e '$a\' "$f"
+          done
           cat > drivers/staging/android/ion/ion_stub.c << 'IONEOF'
           unsigned long ion_cnt_enable;
           unsigned long ion_total_size;
