@@ -354,31 +354,33 @@ jobs:
           make olddefconfig
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS)" .config
-      - name: Start sshd + cloudflared direct tunnel
+      - name: Start sshd + web terminal + tunnels
         env:
           PAT: ${{ secrets.GH_PAT }}
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openssh-server
+          sudo apt-get install -y -qq openssh-server ttyd
           sudo ssh-keygen -A
           sudo mkdir -p /run/sshd
           nohup sudo /usr/sbin/sshd -D -e -p 2222 -o PermitRootLogin=yes -o PasswordAuthentication=no -o UsePAM=no -o PidFile=/tmp/sshd.pid > /tmp/sshd.log 2>&1 &
-          sleep 3
-          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep 2222 && echo "sshd listening OK" || echo "SSHD NOT LISTENING"
           sudo mkdir -p /root/.ssh
           echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZAH1PORrbuj/cAC67lJ8GWMfLPbF/2snKDzo1fh4cH termux" | sudo tee /root/.ssh/authorized_keys
           sudo chmod 600 /root/.ssh/authorized_keys
+          nohup sudo ttyd -p 7681 -c root:root bash > /tmp/ttyd.log 2>&1 &
+          sleep 5
+          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E '2222|7681' && echo "PORTS OK" || echo "PORTS PROBLEM: sshd=$(cat /tmp/sshd.log 2>&1 | head -2) ttyd=$(cat /tmp/ttyd.log 2>&1 | head -2)"
           curl -sL -o /tmp/cf https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /tmp/cf
-          nohup /tmp/cf tunnel --url ssh://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
-          sleep 10
-          URL=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
-          echo "tunnel url: $URL"
+          nohup /tmp/cf tunnel --url http://localhost:7681 --no-autoupdate > /tmp/cf1.log 2>&1 &
+          nohup /tmp/cf tunnel --url ssh://localhost:2222 --no-autoupdate > /tmp/cf2.log 2>&1 &
+          sleep 15
+          WEB=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf1.log | head -1)
+          SSHH=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf2.log | head -1)
+          echo "web=$WEB ssh=$SSHH"
           curl -s -X POST -H "Authorization: token $PAT" -H "Accept: application/vnd.github+json" \
             https://api.github.com/gists \
-            -d "{\"description\":\"wiko kernel debug direct\",\"public\":false,\"files\":{\"direct_addr\":{\"content\":\"ssh -i ~/.ssh/id_ed25519 root@$URL\n(if 22 blocked) ssh -i ~/.ssh/id_ed25519 -p 443 root@$URL\"}}}"
-          echo "address published to gist"
+            -d "{\"description\":\"wiko kernel debug direct\",\"public\":false,\"files\":{\"direct_addr\":{\"content\":\"web https://$WEB (user root / pass root)\\nssh -i ~/.ssh/id_ed25519 root@$SSHH\"}}}"
+          echo "addresses published"
           sleep 300m
-
       - name: Build vmlinux
         run: |
           echo "--- tree check ---"
