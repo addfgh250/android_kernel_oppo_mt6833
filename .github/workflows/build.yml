@@ -392,6 +392,10 @@ jobs:
           # ufs-mtk-platform.{c,h} 引用两层之上的 ufs.h/ufshcd.h → 改相对路径
           sed -i 's|#include "ufs.h"|#include "../../ufs.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
           sed -i 's|#include "ufshcd.h"|#include "../../ufshcd.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
+          # ufs_quirks.h/unipro.h/ufs-mtk.h 同层引用 → -I 到 ufs 根一次性解决
+          sed -i '1i ccflags-y += -I$(srctree)/drivers/scsi/ufs' drivers/scsi/ufs/Makefile
+          # LPM mt6833.c 用 <suspend/mt6833_suspend.h>，suspend/ 是 mt6833 子目录 → -I 到 mt6833
+          sed -i '1i ccflags-y += -I$(srctree)/drivers/misc/mediatek/lpm/modules/platform/mt6833' drivers/misc/mediatek/lpm/modules/platform/mt6833/Makefile
           # trace 头全量搬运到 include/trace/（define_trace.h 以 <trace/xxx.h> 引用）
           find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' -o -name 'trace_*.h' \) ! -name 'trace_events.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
           # define_trace.h 按 TRACE_INCLUDE_PATH ./inc 解析 -> 需要 include/trace/inc/
@@ -401,8 +405,9 @@ jobs:
             cp -n drivers/scsi/ufs/*.h drivers/scsi/ufs/mediatek/$d/ 2>/dev/null || true
           done
           ls drivers/scsi/ufs/mediatek/mt6853/*.h | head -8
-          # lpm suspend 子目录引父目录 mt6833.h（PYPP 兜底显式拷）
-          cp -n drivers/misc/mediatek/lpm/modules/platform/mt6833/mt6833.h drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ 2>/dev/null || true
+          # lpm suspend 子目录引父目录头（mt6833.h -> mt6833_common.h 连锁），全量塞
+          cp -n drivers/misc/mediatek/lpm/modules/platform/mt6833/*.h drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ 2>/dev/null || true
+          cp -n drivers/misc/mediatek/lpm/modules/platform/mt6853/*.h drivers/misc/mediatek/lpm/modules/platform/mt6853/suspend/ 2>/dev/null || true
           ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
           # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
           cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
