@@ -490,6 +490,7 @@ jobs:
           sed -i 's|#include <clk-mux.h>|#include "clk-mux.h"|' drivers/clk/mediatek/clkdbg-mt6833.c
           sed -i 's|#include <dt_idle_states.h>|#include "dt_idle_states.h"|' drivers/cpuidle/cpuidle-mediatek.c
           sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
+          sed -i 's/extern oplus_task_sched_boost(/extern void oplus_task_sched_boost(/' drivers/misc/mediatek/sched/sched_ctl.c
           grep -n "ksm_flock" include/linux/keyslot-manager.h | head -2
           grep -n "clk-mux.h" drivers/clk/mediatek/clkdbg-mt6833.c | head -1
           ls kernel/sched/ 2>/dev/null | head -8
@@ -501,7 +502,7 @@ jobs:
             -exec sed -i -E 's/(^|[[:space:]])-Werror([[:space:]]|$)/\1\2/g' {} +
           echo "-Werror stripped (drivers only, bare flag only)"
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=implicit-function-declaration"
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=implicit-function-declaration -Wno-error=implicit-int"
           # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
           make -j$(nproc) CC=aarch64-linux-gnu-gcc-12 vmlinux
       - name: Check System.map
