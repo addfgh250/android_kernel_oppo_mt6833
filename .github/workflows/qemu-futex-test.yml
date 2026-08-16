@@ -43,10 +43,10 @@ jobs:
              'plist_for_each_entry_safe(this, next, &hb1->chain, list) {\n\t\tpr_info("FUTEX-DBG walk task_count=%d\\n", task_count);'),
             ('ret = rt_mutex_start_proxy_lock(',
              'pr_info("FUTEX-DBG proxy_lock call\\n");\n\t\t\tret = rt_mutex_start_proxy_lock('),
-            ('fixup_pi_state_owner(u32 __user *uaddr, u32 __user *uaddr2,',
-             'pr_info("FUTEX-DBG fixup_pi_state_owner ENTER\\n");\n\tfixup_pi_state_owner(u32 __user *uaddr, u32 __user *uaddr2,'),
-            ('futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,',
-             'pr_info("FUTEX-DBG wait_requeue_pi ENTER\\n");\n\tfutex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,'),
+            ('struct futex_pi_state *pi_state = q->pi_state;',
+             'struct futex_pi_state *pi_state = q->pi_state;\n\tpr_info("FUTEX-DBG fixup_pi_state_owner ENTER\\n");'),
+            ('struct hrtimer_sleeper timeout, *to = NULL;',
+             'struct hrtimer_sleeper timeout, *to = NULL;\n\tpr_info("FUTEX-DBG wait_requeue_pi ENTER\\n");'),
           ]
           for a, b in reps:
             n = f.count(a)
