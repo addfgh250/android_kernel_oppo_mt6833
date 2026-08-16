@@ -1,0 +1,63 @@
+name: ssh-debug-runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ssh-debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout OPLUS futex sources (sparse)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            kernel/futex.c
+            kernel/locking/rtmutex.c
+            kernel/locking/rtmutex_common.h
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch generic 4.14.186
+        run: |
+          curl -sL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz -o k.tar.xz
+          tar xJf k.tar.xz
+          mv linux-4.14.186 linux-g
+
+      - name: Swap in OPLUS futex/rtmutex
+        run: |
+          cp kernel/futex.c linux-g/kernel/futex.c
+          cp kernel/locking/rtmutex.c linux-g/kernel/locking/rtmutex.c
+          cp kernel/locking/rtmutex_common.h linux-g/kernel/locking/rtmutex_common.h
+          echo "swapped markers:"
+          grep -c "attach_to_pi_owner\|rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
+
+      - name: Install cross toolchain + qemu + tmate
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu qemu-system-aarch64 cpio tmate
+
+      - name: Configure and build kernel
+        run: |
+          cd linux-g
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config --enable CONFIG_FUTEX_PI
+          scripts/config --enable CONFIG_RT_MUTEXES
+          scripts/config --enable CONFIG_BLK_DEV_INITRD
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image > kbuild.log 2>&1 || {
+            echo "=== BUILD FAILED, errors: ==="
+            grep -E "error:|undefined reference" kbuild.log | head -30
+            exit 1
+          }
+          echo "=== build OK ==="
+          ls -la arch/arm64/boot/Image
+
+      - name: Start tmate session
+        run: |
+          echo "=== SSH 连接信息 ==="
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+          echo "=== 会话保持 6 小时，连接后可直接交互 ==="
+          sleep 21600
