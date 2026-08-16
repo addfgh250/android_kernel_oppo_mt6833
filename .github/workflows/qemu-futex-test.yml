@@ -30,6 +30,79 @@ jobs:
           echo "swapped markers:"
           grep -c "attach_to_pi_owner\|rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
 
+      - name: Instrument futex EAGAIN paths
+        run: |
+          python3 << 'PYEOF'
+          import re
+          f = open('linux-g/kernel/futex.c').read()
+          # 1) cmpval 不匹配处
+          f = f.replace("""\t\tif (curval != *cmpval) {
+\t\t\tret = -EAGAIN;
+\t\t\tgoto out_unlock;""",
+"""\t\tif (curval != *cmpval) {
+\t\t\tpr_info("FUTEX-DBG cmpval mismatch curval=%u cmpval=%u\\n", curval, *cmpval);
+\t\t\tret = -EAGAIN;
+\t\t\tgoto out_unlock;""")
+          # 2) attach_to_pi_state 的 out_eagain
+          f = f.replace("""out_eagain:
+\tret = -EAGAIN;""",
+"""out_eagain:
+\tpr_info("FUTEX-DBG attach_to_pi_state EAGAIN uval=%u\\n", uval);
+\tret = -EAGAIN;""")
+          # 3) futex_lock_pi_atomic 入口
+          f = f.replace("""static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
+\t\t\t\tunion futex_key *key,
+\t\t\t\tstruct futex_pi_state **ps,
+\t\t\t\tstruct task_struct *task,
+\t\t\t\tstruct task_struct **exiting,
+\t\t\t\tint set_waiters)
+{""",
+"""static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
+\t\t\t\tunion futex_key *key,
+\t\t\t\tstruct futex_pi_state **ps,
+\t\t\t\tstruct task_struct *task,
+\t\t\t\tstruct task_struct **exiting,
+\t\t\t\tint set_waiters)
+{
+\tpr_info("FUTEX-DBG lock_pi_atomic enter vpid=%d set_waiters=%d\\n", task_pid_vnr(task), set_waiters);""")
+          # 4) handle_exit_race
+          f = f.replace("""\t/* If the user space value has changed, try again. */
+\tif (uval2 != uval)
+\t\treturn -EAGAIN;""",
+"""\t/* If the user space value has changed, try again. */
+\tpr_info("FUTEX-DBG handle_exit_race uval=%u uval2=%u\\n", uval, uval2);
+\tif (uval2 != uval)
+\t\treturn -EAGAIN;""")
+          # 5) proxy trylock 返回
+          f = f.replace("""\tif (ret == 1) {
+\t\trequeue_pi_wake_futex(top_waiter, key2, hb2);
+\t\treturn vpid;
+\t}
+\treturn ret;
+}""",
+"""\tif (ret == 1) {
+\t\trequeue_pi_wake_futex(top_waiter, key2, hb2);
+\t\treturn vpid;
+\t}
+\tpr_info("FUTEX-DBG proxy trylock ret=%d\\n", ret);
+\treturn ret;
+}""")
+          open('linux-g/kernel/futex.c','w').write(f)
+          print("futex.c instrumented:", f.count("FUTEX-DBG"))
+          r = open('linux-g/kernel/locking/rtmutex.c').read()
+          r = r.replace("""int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
+\t\t\t      struct rt_mutex_waiter *waiter,
+\t\t\t      struct task_struct *task)
+{""",
+"""int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
+\t\t\t      struct rt_mutex_waiter *waiter,
+\t\t\t      struct task_struct *task)
+{
+\tpr_info("FUTEX-DBG rt_mutex_start_proxy_lock enter task=%d\\n", task_pid_vnr(task));""")
+          open('linux-g/kernel/locking/rtmutex.c','w').write(r)
+          print("rtmutex.c instrumented:", r.count("FUTEX-DBG"))
+          PYEOF
+
       - name: Install cross toolchain + qemu
         run: |
           sudo apt-get update -qq
