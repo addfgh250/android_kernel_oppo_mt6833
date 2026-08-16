@@ -572,9 +572,7 @@ jobs:
           ls include/trace/ | grep -iE "ufs|inc" || echo "UFS TRACE MISSING"
           ls include/trace/ | head -20
           make olddefconfig
-          # DEBUG_INFO 只加调试段，不改变代码布局，符号地址不变（vmlinux 用于提结构体偏移）
-          scripts/config --enable CONFIG_DEBUG_INFO
-          make olddefconfig
+          # 注意：不开 DEBUG_INFO（会漂移数据符号地址，破坏与真机布局一致性）
           echo "--- key config ---"
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|DEBUG_INFO)" .config
       - name: Build vmlinux
@@ -613,17 +611,8 @@ jobs:
           head -3 System.map
           echo "--- symbol check ---"
           grep -E " (init_task|selinux_state|init_cred|init_user_ns)$" System.map || true
-      - name: Extract struct offsets (pahole)
+      - name: Prepare vmlinux
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq dwarves
-          pahole --version
-          for S in task_struct cred rt_mutex_waiter rt_mutex file_operations file inode pipe_buffer pipe_inode_info seq_file kmem_cache task_security_struct selinux_state; do
-            echo "===== $S ====="
-            pahole -C $S vmlinux || echo "(pahole $S failed)"
-          done > structs.txt 2>&1
-          wc -l structs.txt
-          head -50 structs.txt
-          # 备一份去调试段的 vmlinux（保留符号表，供本地反汇编找 selinux_enforcing）
           aarch64-linux-gnu-objcopy --strip-debug vmlinux vmlinux.slim
           ls -la vmlinux vmlinux.slim
       - name: Upload artifacts
@@ -633,5 +622,4 @@ jobs:
           path: |
             System.map
             .config
-            structs.txt
             vmlinux.slim
