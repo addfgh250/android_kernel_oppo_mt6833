@@ -72,7 +72,13 @@ jobs:
           scripts/config --enable CONFIG_RT_MUTEXES
           scripts/config --enable CONFIG_BLK_DEV_INITRD
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image 2>&1 | tail -5
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image > kbuild.log 2>&1 || {
+            echo "=== BUILD FAILED, errors: ==="
+            grep -E "error:|undefined reference" kbuild.log | head -30
+            exit 1
+          }
+          echo "=== build OK, tail: ==="
+          tail -3 kbuild.log
           ls -la arch/arm64/boot/Image
 
       - name: Build static repro and init
