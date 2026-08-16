@@ -510,6 +510,66 @@ jobs:
           void sia81xx_start(void) {}
           void soc_aux_init_only_sia81xx(void) {}
           SIAEOF
+
+          cat >> drivers/staging/android/ion/ion.c << 'OPLUSEOF'
+
+          /* oplus/charger/tee link stubs (vendor-stripped; System.map only, not booted) */
+          long chr_get_debug_level(void) { return 0; }
+          long is_project(void) { return 0; }
+          long charger_manager_notifier(void) { return 0; }
+          long mtk_is_TA_support_pd_pps(void) { return 0; }
+          long is_dual_charger_supported(void) { return 0; }
+          long get_eng_version(void) { return 0; }
+          long register_device_proc(void) { return 0; }
+          long notify_adapter_event(void) { return 0; }
+          long get_PCB_Version(void) { return 0; }
+          long charger_enable_vbus_ovp(void) { return 0; }
+          long oplus_daily_build(void) { return 0; }
+          long _wake_up_charger(void) { return 0; }
+          long sc_select_charging_current(void) { return 0; }
+          long oplus_vooc_get_fastchg_started(void) { return 0; }
+          long oplus_gauge_get_batt_current(void) { return 0; }
+          long oplus_chg_wake_update_work(void) { return 0; }
+          long oplus_chg_set_charger_type_unknown(void) { return 0; }
+          long oplus_chg_get_ui_soc(void) { return 0; }
+          long mtk_get_dynamic_cv(void) { return 0; }
+          long teec_release_shared_memory(void) { return 0; }
+          long teec_finalize_context(void) { return 0; }
+          long oplus_voocphy_get_cp_vbat(void) { return 0; }
+          long oplus_vooc_get_adapter_update_status(void) { return 0; }
+          long oplus_gauge_set_event(void) { return 0; }
+          long oplus_gauge_get_batt_temperature(void) { return 0; }
+          long oplus_chg_set_camera_status(void) { return 0; }
+          long oplus_chg_set_camera_on(void) { return 0; }
+          long oplus_chg_get_voocphy_support(void) { return 0; }
+          long is_typec_adapter(void) { return 0; }
+          long charger_manager_enable_power_path(void) { return 0; }
+          long teec_open_session(void) { return 0; }
+          long teec_invoke_command(void) { return 0; }
+          long teec_initialize_context(void) { return 0; }
+          long teec_close_session(void) { return 0; }
+          long teec_allocate_shared_memory(void) { return 0; }
+          long register_device_proc_for_ufsplus(void) { return 0; }
+          long oplus_vooc_reset_fastchg_after_usbout(void) { return 0; }
+          long oplus_vooc_get_fastchg_to_warm(void) { return 0; }
+          long oplus_vooc_get_fastchg_to_normal(void) { return 0; }
+          long oplus_kevent_fb_str(void) { return 0; }
+          long oplus_get_prop_status(void) { return 0; }
+          long oplus_get_chg_unwakelock(void) { return 0; }
+          long oplus_gauge_init(void) { return 0; }
+          long oplus_chg_show_vooc_logo_ornot(void) { return 0; }
+          long oplus_chg_set_otg_online(void) { return 0; }
+          long oplus_chg_set_chargerid_switch_val(void) { return 0; }
+          long oplus_chg_get_notify_flag(void) { return 0; }
+          long oplus_chg_clear_chargerid_info(void) { return 0; }
+          long oplus_chg_check_chip_is_null(void) { return 0; }
+          long oplus_chg_check_break(void) { return 0; }
+          long mtk_charger_int_handler(void) { return 0; }
+          long is_vooc_support_single_batt_svooc(void) { return 0; }
+          long get_Operator_Version(void) { return 0; }
+          long charger_manager_enable_chg_type_det(void) { return 0; }
+          long BATTERY_SetUSBState(void) { return 0; }
+          OPLUSEOF
           # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
           cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
           # ufs-mtk-trace.h 同款问题（define_trace.h ./ 解析），显式补拷 + 诊断
@@ -531,8 +591,7 @@ jobs:
           sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
           sed -i 's/extern oplus_task_sched_boost(/extern void oplus_task_sched_boost(/' drivers/misc/mediatek/sched/sched_ctl.c
           # oplus typec: patch 引用了 struct 里被剥离的 sbu_en_work 成员 -> 补成员
-          sed -i 's|	struct delayed_work poll_work;|	struct delayed_work poll_work;
-	struct delayed_work sbu_en_work;|' drivers/misc/mediatek/typec/tcpc/tcpc_mt6360.c 2>/dev/null || true
+          sed -i 's|\tstruct delayed_work poll_work;|\tstruct delayed_work poll_work;\n\tstruct delayed_work sbu_en_work;|' drivers/misc/mediatek/typec/tcpc/tcpc_mt6360.c 2>/dev/null || true
           # oplus sensor: 原型1参数 vs 定义0参数 的代码 bug，定义补参数
           sed -i 's/int register_lcdinfo_notifier() {/int register_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
           sed -i 's/int unregister_lcdinfo_notifier() {/int unregister_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
