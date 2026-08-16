@@ -91,6 +91,7 @@ jobs:
                          'ret = do_select(n, &fds, &end_time);'):
               if needle in g:
                   g = g.replace(needle, 'pr_info("DBG stack_fds=%px\\n", stack_fds);\n\t' + needle, 1)
+                  open('linux-g/fs/select.c', 'w').write(g)
                   done = True
                   break
           print('select.c stack_fds print:', 'OK' if done else 'WARN')
