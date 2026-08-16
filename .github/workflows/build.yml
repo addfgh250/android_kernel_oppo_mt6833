@@ -623,6 +623,9 @@ jobs:
           done > structs.txt 2>&1
           wc -l structs.txt
           head -50 structs.txt
+          # 备一份去调试段的 vmlinux（保留符号表，供本地反汇编找 selinux_enforcing）
+          aarch64-linux-gnu-objcopy --strip-debug vmlinux vmlinux.slim
+          ls -la vmlinux vmlinux.slim
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -631,3 +634,4 @@ jobs:
             System.map
             .config
             structs.txt
+            vmlinux.slim
