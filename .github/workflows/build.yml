@@ -497,8 +497,8 @@ jobs:
           # 链接期缺失符号 stub：直接追加到必编 .c 文件末尾（不碰 Makefile，避免 ifeq/endif 结构破坏）
           cat >> drivers/staging/android/ion/ion.c << 'IONEOF'
 
-          unsigned long ion_cnt_enable;
-          unsigned long ion_total_size;
+          bool ion_cnt_enable;
+          atomic_long_t ion_total_size;
           IONEOF
 
           cat >> drivers/staging/android/ion/ion.c << 'OPLUSEOF'
