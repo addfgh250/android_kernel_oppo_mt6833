@@ -33,32 +33,39 @@ jobs:
       - name: Instrument kernel (anchors + ghost delta)
         run: |
           python3 << 'PYEOF'
-          # 1) globalize boot_id buffer（stock 4.14.186 在 kernel/random.c，
-          #    变量名 sysctl_bootid —— WIKO System.map 同名实锤）+ 加 scratch
+          # 1) globalize boot_id buffer（OPLUS/stock 4.14.186 在 drivers/char/random.c，
+          #    变量名 sysctl_bootid，类型 static char —— WIKO System.map 同名实锤）
           boot_name = None
           target_file = None
-          for fn in ('linux-g/kernel/random.c', 'linux-g/kernel/sysctl.c'):
-              s = open(fn).read()
+          for fn in ('linux-g/drivers/char/random.c', 'linux-g/kernel/random.c', 'linux-g/kernel/sysctl.c'):
+              try:
+                  s = open(fn).read()
+              except IOError:
+                  continue
               for cand in ('sysctl_bootid', 'boot_id'):
-                  if ('static unsigned char %s' % cand) in s:
-                      boot_name = cand
-                      target_file = fn
-                      s = s.replace('static unsigned char %s' % cand,
-                                    'unsigned char ghostlock_bootid_%s' % cand)
-                      s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
-                      open(fn, 'w').write(s)
+                  for typ in ('static char %s', 'static unsigned char %s'):
+                      decl = typ % cand
+                      if decl in s:
+                          boot_name = cand
+                          target_file = fn
+                          s = s.replace(decl,
+                                        'unsigned char ghostlock_bootid_%s' % cand)
+                          s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
+                          open(fn, 'w').write(s)
+                          break
+                  if boot_name:
                       break
               if boot_name:
                   break
           assert boot_name, 'boot_id buffer not found'
           # 在 random.c 里加 scratch 全局（插到第一个 #include 之后）
-          s = open('linux-g/kernel/random.c').read()
+          s = open(target_file).read()
           if 'ghostlock_scratch' not in s:
               idx = s.find('#include')
-              assert idx >= 0, 'no include in random.c'
+              assert idx >= 0, 'no include in %s' % target_file
               eol = s.find('\n', idx)
               s = s[:eol+1] + '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n' + s[eol+1:]
-              open('linux-g/kernel/random.c', 'w').write(s)
+              open(target_file, 'w').write(s)
           print('boot buffer:', boot_name, 'in', target_file)
 
           # 2) ghost delta prints: futex_wait_requeue_pi q.waiter
