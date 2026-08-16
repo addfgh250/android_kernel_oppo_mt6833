@@ -105,12 +105,13 @@ jobs:
           #include <sys/syscall.h>
           #include <sys/mount.h>
           #include <sys/reboot.h>
+          #include <sys/stat.h>
           #include <unistd.h>
           #include <stdio.h>
           int main(void) {
-            syscall(SYS_mkdir, "/proc", 0755);
-            syscall(SYS_mkdir, "/dev", 0755);
-            syscall(SYS_mkdir, "/sys", 0755);
+            mkdir("/proc", 0755);
+            mkdir("/dev", 0755);
+            mkdir("/sys", 0755);
             syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
             syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
             syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
