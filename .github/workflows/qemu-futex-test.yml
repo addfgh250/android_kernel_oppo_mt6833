@@ -35,72 +35,91 @@ jobs:
           python3 << 'PYEOF'
           import re
           f = open('linux-g/kernel/futex.c').read()
-          # 1) cmpval 不匹配处
-          f = f.replace("""\t\tif (curval != *cmpval) {
-\t\t\tret = -EAGAIN;
-\t\t\tgoto out_unlock;""",
-"""\t\tif (curval != *cmpval) {
-\t\t\tpr_info("FUTEX-DBG cmpval mismatch curval=%u cmpval=%u\\n", curval, *cmpval);
-\t\t\tret = -EAGAIN;
-\t\t\tgoto out_unlock;""")
-          # 2) attach_to_pi_state 的 out_eagain
-          f = f.replace("""out_eagain:
-\tret = -EAGAIN;""",
-"""out_eagain:
-\tpr_info("FUTEX-DBG attach_to_pi_state EAGAIN uval=%u\\n", uval);
-\tret = -EAGAIN;""")
-          # 3) futex_lock_pi_atomic 入口
-          f = f.replace("""static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
-\t\t\t\tunion futex_key *key,
-\t\t\t\tstruct futex_pi_state **ps,
-\t\t\t\tstruct task_struct *task,
-\t\t\t\tstruct task_struct **exiting,
-\t\t\t\tint set_waiters)
-{""",
-"""static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
-\t\t\t\tunion futex_key *key,
-\t\t\t\tstruct futex_pi_state **ps,
-\t\t\t\tstruct task_struct *task,
-\t\t\t\tstruct task_struct **exiting,
-\t\t\t\tint set_waiters)
-{
-\tpr_info("FUTEX-DBG lock_pi_atomic enter vpid=%d set_waiters=%d\\n", task_pid_vnr(task), set_waiters);""")
-          # 4) handle_exit_race
-          f = f.replace("""\t/* If the user space value has changed, try again. */
-\tif (uval2 != uval)
-\t\treturn -EAGAIN;""",
-"""\t/* If the user space value has changed, try again. */
-\tpr_info("FUTEX-DBG handle_exit_race uval=%u uval2=%u\\n", uval, uval2);
-\tif (uval2 != uval)
-\t\treturn -EAGAIN;""")
-          # 5) proxy trylock 返回
-          f = f.replace("""\tif (ret == 1) {
-\t\trequeue_pi_wake_futex(top_waiter, key2, hb2);
-\t\treturn vpid;
-\t}
-\treturn ret;
-}""",
-"""\tif (ret == 1) {
-\t\trequeue_pi_wake_futex(top_waiter, key2, hb2);
-\t\treturn vpid;
-\t}
-\tpr_info("FUTEX-DBG proxy trylock ret=%d\\n", ret);
-\treturn ret;
-}""")
+          a = """if (curval != *cmpval) {
+          		ret = -EAGAIN;
+          		goto out_unlock;"""
+          b = """if (curval != *cmpval) {
+          		pr_info("FUTEX-DBG cmpval mismatch curval=%u cmpval=%u\\n", curval, *cmpval);
+          		ret = -EAGAIN;
+          		goto out_unlock;"""
+          if a in f:
+            f = f.replace(a, b)
+          else:
+            print('WARN cmpval anchor not found')
+          a = """out_eagain:
+          	ret = -EAGAIN;"""
+          b = """out_eagain:
+          	pr_info("FUTEX-DBG attach_to_pi_state EAGAIN uval=%u\\n", uval);
+          	ret = -EAGAIN;"""
+          if a in f:
+            f = f.replace(a, b)
+          else:
+            print('WARN out_eagain anchor not found')
+          a = """static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
+          				union futex_key *key,
+          				struct futex_pi_state **ps,
+          				struct task_struct *task,
+          				struct task_struct **exiting,
+          				int set_waiters)
+          {"""
+          b = """static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
+          				union futex_key *key,
+          				struct futex_pi_state **ps,
+          				struct task_struct *task,
+          				struct task_struct **exiting,
+          				int set_waiters)
+          {
+          	pr_info("FUTEX-DBG lock_pi_atomic enter vpid=%d set_waiters=%d\\n", task_pid_vnr(task), set_waiters);"""
+          if a in f:
+            f = f.replace(a, b)
+          else:
+            print('WARN lock_pi_atomic anchor not found')
+          a = """	/* If the user space value has changed, try again. */
+          	if (uval2 != uval)
+          		return -EAGAIN;"""
+          b = """	/* If the user space value has changed, try again. */
+          	pr_info("FUTEX-DBG handle_exit_race uval=%u uval2=%u\\n", uval, uval2);
+          	if (uval2 != uval)
+          		return -EAGAIN;"""
+          if a in f:
+            f = f.replace(a, b)
+          else:
+            print('WARN exit_race anchor not found')
+          a = """	if (ret == 1) {
+          		requeue_pi_wake_futex(top_waiter, key2, hb2);
+          		return vpid;
+          	}
+          	return ret;
+          }"""
+          b = """	if (ret == 1) {
+          		requeue_pi_wake_futex(top_waiter, key2, hb2);
+          		return vpid;
+          	}
+          	pr_info("FUTEX-DBG proxy trylock ret=%d\\n", ret);
+          	return ret;
+          }"""
+          if a in f:
+            f = f.replace(a, b)
+          else:
+            print('WARN proxy anchor not found')
           open('linux-g/kernel/futex.c','w').write(f)
-          print("futex.c instrumented:", f.count("FUTEX-DBG"))
+          print('futex.c instrumented:', f.count('FUTEX-DBG'))
           r = open('linux-g/kernel/locking/rtmutex.c').read()
-          r = r.replace("""int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
-\t\t\t      struct rt_mutex_waiter *waiter,
-\t\t\t      struct task_struct *task)
-{""",
-"""int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
-\t\t\t      struct rt_mutex_waiter *waiter,
-\t\t\t      struct task_struct *task)
-{
-\tpr_info("FUTEX-DBG rt_mutex_start_proxy_lock enter task=%d\\n", task_pid_vnr(task));""")
+          a = """int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
+          		      struct rt_mutex_waiter *waiter,
+          		      struct task_struct *task)
+          {"""
+          b = """int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
+          		      struct rt_mutex_waiter *waiter,
+          		      struct task_struct *task)
+          {
+          	pr_info("FUTEX-DBG rt_mutex_start_proxy_lock enter task=%d\\n", task_pid_vnr(task));"""
+          if a in r:
+            r = r.replace(a, b)
+          else:
+            print('WARN rtmutex anchor not found')
           open('linux-g/kernel/locking/rtmutex.c','w').write(r)
-          print("rtmutex.c instrumented:", r.count("FUTEX-DBG"))
+          print('rtmutex.c instrumented:', r.count('FUTEX-DBG'))
           PYEOF
 
       - name: Install cross toolchain + qemu
