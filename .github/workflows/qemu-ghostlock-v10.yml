@@ -155,10 +155,16 @@ jobs:
           #include <fcntl.h>
           #include <stdlib.h>
 
-          #define ANCHOR_COMM   (${INIT_TASK}ULL + 0x7e0)
-          #define ANCHOR_BOOTID  ${BOOT_ID}ULL
-          #define ANCHOR_INIT    ${INIT_TASK}ULL
-          #define ANCHOR_SCRATCH ${SCRATCH}ULL
+          #define ANCHOR_COMM   (0x${INIT_TASK}ULL + 0x7e0)
+          #define ANCHOR_BOOTID  0x${BOOT_ID}ULL
+          #define ANCHOR_INIT    0x${INIT_TASK}ULL
+          #define ANCHOR_SCRATCH 0x${SCRATCH}ULL
+
+          struct sched_attr_x {
+            uint32_t size; uint32_t sched_policy; uint64_t sched_flags;
+            int32_t sched_nice; uint32_t sched_priority;
+            uint64_t sched_runtime; uint64_t sched_deadline; uint64_t sched_period;
+          };
 
           static long futex(uint32_t *uaddr, int op, uint32_t val,
                             const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
@@ -186,7 +192,7 @@ jobs:
           static void *consumer_fn(void *a) {
             while (!ghost_go) usleep(1000);
             usleep(50000);
-            struct sched_attr attr;
+            struct sched_attr_x attr;
             memset(&attr, 0, sizeof(attr));
             attr.size = sizeof(attr);
             attr.sched_policy = SCHED_NORMAL;
