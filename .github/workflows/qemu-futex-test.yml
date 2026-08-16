@@ -33,93 +33,30 @@ jobs:
       - name: Instrument futex EAGAIN paths
         run: |
           python3 << 'PYEOF'
-          import re
           f = open('linux-g/kernel/futex.c').read()
-          a = """if (curval != *cmpval) {
-          		ret = -EAGAIN;
-          		goto out_unlock;"""
-          b = """if (curval != *cmpval) {
-          		pr_info("FUTEX-DBG cmpval mismatch curval=%u cmpval=%u\\n", curval, *cmpval);
-          		ret = -EAGAIN;
-          		goto out_unlock;"""
-          if a in f:
-            f = f.replace(a, b)
-          else:
-            print('WARN cmpval anchor not found')
-          a = """out_eagain:
-          	ret = -EAGAIN;"""
-          b = """out_eagain:
-          	pr_info("FUTEX-DBG attach_to_pi_state EAGAIN uval=%u\\n", uval);
-          	ret = -EAGAIN;"""
-          if a in f:
-            f = f.replace(a, b)
-          else:
-            print('WARN out_eagain anchor not found')
-          a = """static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
-          				union futex_key *key,
-          				struct futex_pi_state **ps,
-          				struct task_struct *task,
-          				struct task_struct **exiting,
-          				int set_waiters)
-          {"""
-          b = """static int futex_lock_pi_atomic(u32 __user *uaddr, struct futex_hash_bucket *hb,
-          				union futex_key *key,
-          				struct futex_pi_state **ps,
-          				struct task_struct *task,
-          				struct task_struct **exiting,
-          				int set_waiters)
-          {
-          	pr_info("FUTEX-DBG lock_pi_atomic enter vpid=%d set_waiters=%d\\n", task_pid_vnr(task), set_waiters);"""
-          if a in f:
-            f = f.replace(a, b)
-          else:
-            print('WARN lock_pi_atomic anchor not found')
-          a = """	/* If the user space value has changed, try again. */
-          	if (uval2 != uval)
-          		return -EAGAIN;"""
-          b = """	/* If the user space value has changed, try again. */
-          	pr_info("FUTEX-DBG handle_exit_race uval=%u uval2=%u\\n", uval, uval2);
-          	if (uval2 != uval)
-          		return -EAGAIN;"""
-          if a in f:
-            f = f.replace(a, b)
-          else:
-            print('WARN exit_race anchor not found')
-          a = """	if (ret == 1) {
-          		requeue_pi_wake_futex(top_waiter, key2, hb2);
-          		return vpid;
-          	}
-          	return ret;
-          }"""
-          b = """	if (ret == 1) {
-          		requeue_pi_wake_futex(top_waiter, key2, hb2);
-          		return vpid;
-          	}
-          	pr_info("FUTEX-DBG proxy trylock ret=%d\\n", ret);
-          	return ret;
-          }"""
-          if a in f:
-            f = f.replace(a, b)
-          else:
-            print('WARN proxy anchor not found')
+          reps = [
+            ('return ret ? ret : task_count;',
+             'pr_info("FUTEX-DBG requeue-end ret=%d task_count=%d\\n", ret, task_count);\n\treturn ret ? ret : task_count;'),
+            ('if (!top_waiter)\n\t\treturn 0;',
+             'if (!top_waiter) {\n\t\tpr_info("FUTEX-DBG proxy no-waiter\\n");\n\t\treturn 0;\n\t}'),
+            ('plist_for_each_entry_safe(this, next, &hb1->chain, list) {',
+             'plist_for_each_entry_safe(this, next, &hb1->chain, list) {\n\t\tpr_info("FUTEX-DBG walk task_count=%d\\n", task_count);'),
+            ('ret = rt_mutex_start_proxy_lock(',
+             'pr_info("FUTEX-DBG proxy_lock call\\n");\n\t\t\tret = rt_mutex_start_proxy_lock('),
+            ('fixup_pi_state_owner(u32 __user *uaddr, u32 __user *uaddr2,',
+             'pr_info("FUTEX-DBG fixup_pi_state_owner ENTER\\n");\n\tfixup_pi_state_owner(u32 __user *uaddr, u32 __user *uaddr2,'),
+            ('futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,',
+             'pr_info("FUTEX-DBG wait_requeue_pi ENTER\\n");\n\tfutex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,'),
+          ]
+          for a, b in reps:
+            n = f.count(a)
+            if n == 1:
+              f = f.replace(a, b)
+              print('OK:', a[:40])
+            else:
+              print('WARN count=%d:' % n, a[:40])
           open('linux-g/kernel/futex.c','w').write(f)
-          print('futex.c instrumented:', f.count('FUTEX-DBG'))
-          r = open('linux-g/kernel/locking/rtmutex.c').read()
-          a = """int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
-          		      struct rt_mutex_waiter *waiter,
-          		      struct task_struct *task)
-          {"""
-          b = """int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
-          		      struct rt_mutex_waiter *waiter,
-          		      struct task_struct *task)
-          {
-          	pr_info("FUTEX-DBG rt_mutex_start_proxy_lock enter task=%d\\n", task_pid_vnr(task));"""
-          if a in r:
-            r = r.replace(a, b)
-          else:
-            print('WARN rtmutex anchor not found')
-          open('linux-g/kernel/locking/rtmutex.c','w').write(r)
-          print('rtmutex.c instrumented:', r.count('FUTEX-DBG'))
+          print('total FUTEX-DBG:', f.count('FUTEX-DBG'))
           PYEOF
 
       - name: Install cross toolchain + qemu
