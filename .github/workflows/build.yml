@@ -500,20 +500,15 @@ jobs:
           unsigned long ion_cnt_enable;
           unsigned long ion_total_size;
           IONEOF
-          cat >> drivers/android/binder.c << 'HANSEOF'
-
-          void hans_report(int type, ...) {}
-          HANSEOF
-          cat >> sound/soc/mediatek/mt6833/mt6833-mt6359.c << 'SIAEOF'
-
-          void sia81xx_stop(void) {}
-          void sia81xx_start(void) {}
-          void soc_aux_init_only_sia81xx(void) {}
-          SIAEOF
 
           cat >> drivers/staging/android/ion/ion.c << 'OPLUSEOF'
 
           /* oplus/charger/tee link stubs (vendor-stripped; System.map only, not booted) */
+          /* hans (binder) + sia81xx (mt6359) stubs moved here: their .c files include conflicting headers */
+          int hans_report(int type, int caller_pid, int caller_uid, int target_pid, int target_uid, const char *rpc_name, int code) { return 0; }
+          void sia81xx_stop(void) {}
+          void sia81xx_start(void) {}
+          void soc_aux_init_only_sia81xx(void) {}
           long chr_get_debug_level(void) { return 0; }
           long is_project(void) { return 0; }
           long charger_manager_notifier(void) { return 0; }
