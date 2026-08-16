@@ -68,15 +68,20 @@ jobs:
               open(target_file, 'w').write(s)
           print('boot buffer:', boot_name, 'in', target_file)
 
-          # 2) ghost delta prints: futex_wait_requeue_pi q.waiter
+          # 2) ghost delta print: futex_wait_requeue_pi 的栈局部 rt_waiter
           f = open('linux-g/kernel/futex.c').read()
-          for needle in ('struct futex_q q = futex_q_init;', 'struct futex_q q;'):
-              if needle in f:
-                  f = f.replace(needle, needle + '\n\tpr_info("DBG q_waiter=%px\\n", &q.waiter);', 1)
-                  print('futex.c q_waiter print OK:', needle)
-                  break
+          needle = 'struct rt_mutex_waiter rt_waiter;'
+          cnt = f.count(needle)
+          if cnt >= 2:
+              # 第二个声明是 futex_wait_requeue_pi 里的（第一个是 futex_lock_pi 路径）
+              idx = f.rfind(needle)
+              f = f[:idx+len(needle)] + '\n\tpr_info("DBG rt_waiter=%px\\n", &rt_waiter);' + f[idx+len(needle):]
+              print('futex.c rt_waiter print OK (total decls=%d)' % cnt)
+          elif cnt == 1:
+              f = f.replace(needle, needle + '\n\tpr_info("DBG rt_waiter=%px\\n", &rt_waiter);', 1)
+              print('futex.c rt_waiter print OK (single decl)')
           else:
-              print('futex.c q_waiter print WARN: needle missing')
+              print('futex.c rt_waiter print WARN: needle missing')
           open('linux-g/kernel/futex.c','w').write(f)
 
           # 3) stack_fds print in fs/select.c core_sys_select
@@ -303,9 +308,9 @@ jobs:
             if (n <= 0) { printf("REPRO kmsg read n=%zd\n", n); return; }
             buf[n] = 0;
             char *p = buf;
-            while ((p = strstr(p, "DBG q_waiter=")) != NULL) {
-              *qwaiter = strtoull(p + 13, NULL, 16);
-              p += 13;
+            while ((p = strstr(p, "DBG rt_waiter=")) != NULL) {
+              *qwaiter = strtoull(p + 14, NULL, 16);
+              p += 14;
             }
             p = buf;
             while ((p = strstr(p, "DBG stack_fds=")) != NULL) {
