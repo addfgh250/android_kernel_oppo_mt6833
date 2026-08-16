@@ -128,15 +128,15 @@ jobs:
           ls -la ../initramfs.cpio.gz
 
       - name: Run QEMU test
-        timeout-minutes: 10
+        timeout-minutes: 6
         run: |
-          qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -m 512M -smp 4 -nographic \
+          timeout 240 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 512M -smp 4 -nographic -no-reboot \
             -kernel linux-g/arch/arm64/boot/Image \
             -initrd initramfs.cpio.gz \
-            -append "console=ttyAMA0 rdinit=/init quiet" > qemu.log 2>&1 || true
+            -append "console=ttyAMA0 earlycon rdinit=/init" > qemu.log 2>&1 || true
           echo "=== QEMU log tail ==="
-          tail -100 qemu.log
+          tail -150 qemu.log
 
       - name: Upload QEMU log
         uses: actions/upload-artifact@v4
