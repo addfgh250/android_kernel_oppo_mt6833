@@ -66,13 +66,14 @@ jobs:
             return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
           }
           static uint32_t f_wait, f_pi_target, f_pi_chain;
-          static volatile int owner_ok;
+          static volatile int owner_ok, waiter_has_chain, owner_has_target, waiter_waiting;
 
           static void *owner_fn(void *a) {
             long r = futex(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO owner LOCK_PI target ret=%ld errno=%d pi_target=%u\n", r, errno, f_pi_target);
             __sync_synchronize();
-            owner_ok = 1;
+            owner_has_target = 1;
+            while (!waiter_has_chain) { usleep(1000); }
             r = futex(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO owner LOCK_PI chain ret=%ld errno=%d chain=%u\n", r, errno, f_pi_chain);
             sleep(60);
@@ -81,7 +82,12 @@ jobs:
           static void *waiter_fn(void *a) {
             long r = futex(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d chain=%u\n", r, errno, f_pi_chain);
+            __sync_synchronize();
+            waiter_has_chain = 1;
+            while (!owner_has_target) { usleep(1000); }
             struct timespec ts = { .tv_sec = 10 };
+            __sync_synchronize();
+            waiter_waiting = 1;
             r = futex(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target, 0);
             printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d\n", r, errno);
             return NULL;
@@ -91,7 +97,7 @@ jobs:
             pthread_create(&o, NULL, owner_fn, NULL);
             usleep(200000);
             pthread_create(&w, NULL, waiter_fn, NULL);
-            usleep(200000);
+            while (!waiter_waiting) { usleep(1000); }
             for (int i = 1; i <= 3; i++) {
               errno = 0;
               long r = futex(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
