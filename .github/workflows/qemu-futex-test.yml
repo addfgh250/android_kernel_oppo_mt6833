@@ -27,7 +27,7 @@ jobs:
           cp kernel/futex.c linux-g/kernel/futex.c
           cp kernel/locking/rtmutex.c linux-g/kernel/locking/rtmutex.c
           cp kernel/locking/rtmutex_common.h linux-g/kernel/locking/rtmutex_common.h
-          echo "swapped:"
+          echo "swapped markers:"
           grep -c "attach_to_pi_owner\|rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
 
       - name: Install cross toolchain + qemu
@@ -35,7 +35,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu qemu-system-aarch64 cpio
 
-      - name: Configure + build kernel
+      - name: Configure and build kernel
         run: |
           cd linux-g
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
@@ -46,82 +46,82 @@ jobs:
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image 2>&1 | tail -5
           ls -la arch/arm64/boot/Image
 
-      - name: Build static repro + init
+      - name: Build static repro and init
         run: |
-          mkdir -p initramfs/bin initramfs/proc initramfs/dev initramfs/sys
+          mkdir -p initramfs/proc initramfs/dev initramfs/sys
           cat > repro.c << 'EOF'
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdint.h>
-#include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/syscall.h>
-#include <linux/futex.h>
-#include <time.h>
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdint.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <unistd.h>
+          #include <pthread.h>
+          #include <sys/syscall.h>
+          #include <linux/futex.h>
+          #include <time.h>
 
-static long futex(uint32_t *uaddr, int op, uint32_t val,
-                  const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
-  return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
-}
-static uint32_t f_wait, f_pi_target;
-static volatile int owner_ok;
+          static long futex(uint32_t *uaddr, int op, uint32_t val,
+                            const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
+            return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
+          }
+          static uint32_t f_wait, f_pi_target;
+          static volatile int owner_ok;
 
-static void *owner_fn(void *a) {
-  long r = futex(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
-  printf("REPRO owner LOCK_PI ret=%ld errno=%d pi_target=%u\n", r, errno, f_pi_target);
-  __sync_synchronize();
-  owner_ok = 1;
-  sleep(60);
-  return NULL;
-}
-static void *waiter_fn(void *a) {
-  struct timespec ts = { .tv_sec = 10 };
-  long r = futex(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target, 0);
-  printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d\n", r, errno);
-  return NULL;
-}
-int main(void) {
-  pthread_t o, w;
-  pthread_create(&o, NULL, owner_fn, NULL);
-  usleep(200000);
-  pthread_create(&w, NULL, waiter_fn, NULL);
-  usleep(200000);
-  for (int i = 1; i <= 3; i++) {
-    errno = 0;
-    long r = futex(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
-    printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d f_wait=%u pi_target=%u\n",
-           i, r, errno, f_wait, f_pi_target);
-    sleep(1);
-  }
-  sleep(3);
-  printf("REPRO done owner_ok=%d\n", owner_ok);
-  return 0;
-}
-EOF
+          static void *owner_fn(void *a) {
+            long r = futex(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI ret=%ld errno=%d pi_target=%u\n", r, errno, f_pi_target);
+            __sync_synchronize();
+            owner_ok = 1;
+            sleep(60);
+            return NULL;
+          }
+          static void *waiter_fn(void *a) {
+            struct timespec ts = { .tv_sec = 10 };
+            long r = futex(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target, 0);
+            printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d\n", r, errno);
+            return NULL;
+          }
+          int main(void) {
+            pthread_t o, w;
+            pthread_create(&o, NULL, owner_fn, NULL);
+            usleep(200000);
+            pthread_create(&w, NULL, waiter_fn, NULL);
+            usleep(200000);
+            for (int i = 1; i <= 3; i++) {
+              errno = 0;
+              long r = futex(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
+              printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d f_wait=%u pi_target=%u\n",
+                     i, r, errno, f_wait, f_pi_target);
+              sleep(1);
+            }
+            sleep(3);
+            printf("REPRO done owner_ok=%d\n", owner_ok);
+            return 0;
+          }
+          EOF
           aarch64-linux-gnu-gcc -static -O2 -pthread repro.c -o initramfs/repro
           cat > init.c << 'EOF2'
-#include <sys/syscall.h>
-#include <sys/mount.h>
-#include <sys/reboot.h>
-#include <unistd.h>
-#include <stdio.h>
-int main(void) {
-  syscall(SYS_mkdir, "/proc", 0755);
-  syscall(SYS_mkdir, "/dev", 0755);
-  syscall(SYS_mkdir, "/sys", 0755);
-  syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
-  syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
-  syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
-  printf("=== QEMU futex repro start ===\n");
-  fflush(stdout);
-  execl("/repro", "repro", NULL);
-  printf("exec failed\n");
-  syscall(SYS_reboot, 0xfee1dead, 672274793, 0x4321fedc, NULL);
-  return 0;
-}
-EOF2
+          #include <sys/syscall.h>
+          #include <sys/mount.h>
+          #include <sys/reboot.h>
+          #include <unistd.h>
+          #include <stdio.h>
+          int main(void) {
+            syscall(SYS_mkdir, "/proc", 0755);
+            syscall(SYS_mkdir, "/dev", 0755);
+            syscall(SYS_mkdir, "/sys", 0755);
+            syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
+            syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
+            syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
+            printf("=== QEMU futex repro start ===\n");
+            fflush(stdout);
+            execl("/repro", "repro", NULL);
+            printf("exec failed\n");
+            syscall(SYS_reboot, 0xfee1dead, 672274793, 0x4321fedc, NULL);
+            return 0;
+          }
+          EOF2
           aarch64-linux-gnu-gcc -static -O2 init.c -o initramfs/init
           cd initramfs && find . | cpio -o -H newc | gzip > ../initramfs.cpio.gz
           ls -la ../initramfs.cpio.gz
@@ -135,7 +135,7 @@ EOF2
             -initrd initramfs.cpio.gz \
             -append "console=ttyAMA0 rdinit=/init quiet" > qemu.log 2>&1 || true
           echo "=== QEMU log tail ==="
-          tail -80 qemu.log
+          tail -100 qemu.log
 
       - name: Upload QEMU log
         uses: actions/upload-artifact@v4
