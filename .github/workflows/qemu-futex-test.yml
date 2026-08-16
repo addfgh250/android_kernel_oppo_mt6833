@@ -101,14 +101,14 @@ jobs:
             return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
           }
           static uint32_t f_wait, f_pi_target, f_pi_chain;
-          static volatile int owner_ok, waiter_has_chain, owner_has_target, waiter_waiting;
+          static volatile int owner_has_target, waiter_has_chain, waiter_waiting, requeue_done;
 
           static void *owner_fn(void *a) {
             long r = futex(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO owner LOCK_PI target ret=%ld errno=%d pi_target=%u\n", r, errno, f_pi_target);
             __sync_synchronize();
             owner_has_target = 1;
-            while (!waiter_has_chain) { usleep(1000); }
+            while (!requeue_done) { usleep(1000); }   /* 等 requeue 完再上 chain，避开死锁检测 */
             r = futex(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO owner LOCK_PI chain ret=%ld errno=%d chain=%u\n", r, errno, f_pi_chain);
             sleep(60);
@@ -138,10 +138,12 @@ jobs:
               long r = futex(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
               printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d f_wait=%u pi_target=%u\n",
                      i, r, errno, f_wait, f_pi_target);
+              if (r >= 0) { __sync_synchronize(); requeue_done = 1; break; }
               sleep(1);
             }
+            requeue_done = 1;
             sleep(3);
-            printf("REPRO done owner_ok=%d\n", owner_ok);
+            printf("REPRO done waiter_waiting=%d\n", waiter_waiting);
             return 0;
           }
           EOF
