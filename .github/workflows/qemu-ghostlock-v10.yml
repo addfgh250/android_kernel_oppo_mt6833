@@ -155,7 +155,10 @@ jobs:
               call_needle = ('ret = core_sys_select(n, inp, outp, exp, to);\n'
                              '\tret = poll_select_copy_remaining(&end_time, tsp, 0, ret);')
               if call_needle in g:
+                  fwd = ('static noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n'
+                         '        fd_set __user *outp, fd_set __user *exp, struct timespec64 *end_time);\n\t')
                   g = g.replace(call_needle,
+                                fwd +
                                 'ret = ghostlock_wrap_select(n, inp, outp, exp, to);\n'
                                 '\tret = poll_select_copy_remaining(&end_time, tsp, 0, ret);', 1)
                   wrapper = ("\nstatic noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n"
