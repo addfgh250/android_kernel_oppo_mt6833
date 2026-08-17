@@ -2,6 +2,11 @@ name: qemu-ghostlock-v10
 
 on:
   workflow_dispatch:
+    inputs:
+      pad:
+        description: 'ghost pad bytes in futex_wait_requeue_pi (align rt_waiter to stack_fds)'
+        required: false
+        default: '160'
 
 jobs:
   qemu-ghostlock:
@@ -31,8 +36,11 @@ jobs:
           grep -c "rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
 
       - name: Instrument kernel (anchors + ghost delta)
+        env:
+          GHOSTPAD: ${{ github.event.inputs.pad || '160' }}
         run: |
           python3 << 'PYEOF'
+          import os
           # 1) globalize boot_id buffer（OPLUS/stock 4.14.186 在 drivers/char/random.c，
           #    变量名 sysctl_bootid，类型 static char —— WIKO System.map 同名实锤）
           boot_name = None
@@ -74,10 +82,14 @@ jobs:
           if cnt >= 2:
               # 第二个声明是 futex_wait_requeue_pi 里的（第一个是 futex_lock_pi 路径）
               idx = f.rfind(needle)
-              cap = ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
-                     "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;")
+              pad = int(os.environ.get('GHOSTPAD', '160'))
+              cap = ("\n\tvolatile char ghostlock_pad[%d];\n"
+                     "\tasm volatile(\"\" :: \"r\"(ghostlock_pad));\n"
+                     "\tpr_info(\"DBG pad=%px\\n\", (void *)ghostlock_pad);\n" % pad)
+              cap += ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
+                      "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;")
               f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
-              print('futex.c rt_waiter capture OK (total decls=%d)' % cnt)
+              print('futex.c rt_waiter capture OK (total decls=%d pad=%d)' % (cnt, pad))
           elif cnt == 1:
               f = f.replace(needle, needle + '\n\tpr_info("DBG rt_waiter=%px\\n", &rt_waiter);', 1)
               print('futex.c rt_waiter capture OK (single decl)')
