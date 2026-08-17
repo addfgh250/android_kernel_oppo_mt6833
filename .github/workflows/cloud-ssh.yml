@@ -1,0 +1,49 @@
+name: cloud-ssh
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Install openssh + bore
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server curl > /dev/null 2>&1
+          curl -sL https://github.com/ekzhang/bore/releases/latest/download/bore-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
+          tar xzf /tmp/bore.tar.gz -C /tmp
+          /tmp/bore --version
+          echo "installed"
+
+      - name: Configure sshd
+        run: |
+          # 随机密码（临时环境，6小时即焚）
+          PASS=$(head -c 12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-10)
+          echo "runner:$PASS" | sudo chpasswd
+          sudo mkdir -p /run/sshd
+          echo "PasswordAuthentication yes" | sudo tee /etc/ssh/sshd_config.d/99-cloud.conf
+          echo "PermitRootLogin no" | sudo tee -a /etc/ssh/sshd_config.d/99-cloud.conf
+          sudo sed -i 's/#\?Port 22/Port 2222/' /etc/ssh/sshd_config
+          echo "SSHPASS=$PASS" > /tmp/sshpass.txt
+
+      - name: Start sshd + bore tunnel
+        run: |
+          sudo /usr/sbin/sshd
+          PASS=$(grep -o 'SSHPASS=.*' /tmp/sshpass.txt | cut -d= -f2)
+          nohup /tmp/bore local 2222 --to bore.pub > /tmp/bore.log 2>&1 &
+          # 等 bore 分配端口
+          for i in $(seq 1 20); do
+            PORT=$(grep -oE 'bore\.pub:[0-9]+' /tmp/bore.log | head -1)
+            if [ -n "$PORT" ]; then break; fi
+            sleep 2
+          done
+          echo ""
+          echo "############################################################"
+          echo "=== SSH 连接信息 ==="
+          echo "ssh runner@bore.pub -p $(echo $PORT | cut -d: -f2)"
+          echo "密码: $PASS"
+          echo "############################################################"
+          echo "会话保持近 6 小时"
+          sleep 20400
