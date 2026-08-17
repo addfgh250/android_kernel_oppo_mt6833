@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       pad:
-        description: 'ghost pad bytes in futex_wait_requeue_pi (align rt_waiter to stack_fds)'
+        description: 'pad bytes in futex_wait_requeue_pi before rt_waiter (0 = none)'
+        required: false
+        default: '0'
+      selpad:
+        description: 'pad bytes in core_sys_select before stack_fds (push stack_fds down)'
         required: false
         default: '160'
 
@@ -37,7 +41,8 @@ jobs:
 
       - name: Instrument kernel (anchors + ghost delta)
         env:
-          GHOSTPAD: ${{ github.event.inputs.pad || '160' }}
+          GHOSTPAD: ${{ github.event.inputs.pad || '0' }}
+          SELPAD: ${{ github.event.inputs.selpad || '160' }}
         run: |
           python3 << 'PYEOF'
           import os
@@ -82,11 +87,14 @@ jobs:
           if cnt >= 2:
               # 第二个声明是 futex_wait_requeue_pi 里的（第一个是 futex_lock_pi 路径）
               idx = f.rfind(needle)
-              pad = int(os.environ.get('GHOSTPAD', '160'))
-              cap = ("\n\tvolatile char ghostlock_pad[%d];\n"
-                     "\tasm volatile(\"\" :: \"r\"(ghostlock_pad));\n"
-                     "\tpr_info(\"DBG pad=%%px\\n\", (void *)ghostlock_pad);\n") % pad
-              cap += ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
+              pad = int(os.environ.get('GHOSTPAD', '0'))
+              if pad > 0:
+                  cap = ("\n\tvolatile char ghostlock_pad[%d];\n"
+                         "\tasm volatile(\"\" :: \"r\"(ghostlock_pad));\n"
+                         "\tpr_info(\"DBG pad=%%px\\n\", (void *)ghostlock_pad);\n") % pad
+              else:
+                  cap = "\n"
+              cap += ("\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
                       "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;")
               f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
               print('futex.c rt_waiter capture OK (total decls=%d pad=%d)' % (cnt, pad))
@@ -106,9 +114,22 @@ jobs:
               geol = g.find('\n', gidx)
               g = g[:geol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + g[geol+1:]
           done = False
+          selpad = int(os.environ.get('SELPAD', '160'))
           for needle in ('ret = do_select(n, &fds, end_time);',
                          'ret = do_select(n, &fds, &end_time);'):
               if needle in g:
+                  if selpad > 0 and 'ghostlock_selpad' not in g:
+                      # 把 stack_fds 数组往下推：在其声明前垫大数组
+                      # （gcc 大数组放帧顶 → 前插 pad 抢占高位 → stack_fds 下移）
+                      sfd_needle = 'long stack_fds[SELECT_STACK_ALLOC/sizeof(long)];'
+                      if sfd_needle in g:
+                          sfd_cap = ("volatile char ghostlock_selpad[%d];\n\t"
+                                     "asm volatile(\"\" :: \"r\"(ghostlock_selpad));\n\t"
+                                     "pr_info(\"DBG selpad=%%px\\n\", (void *)ghostlock_selpad);\n\t") % selpad
+                          g = g.replace(sfd_needle, sfd_cap + sfd_needle, 1)
+                          print('select.c selpad inserted (%d bytes)' % selpad)
+                      else:
+                          print('select.c selpad WARN: stack_fds needle missing')
                   cap = ("pr_info(\"DBG stack_fds_arr=%px\\n\", (void *)&stack_fds[0]);\n\t"
                          "ghostlock_scratch[1] = (unsigned long)&stack_fds[0];\n\t"
                          "pr_info(\"DBG shift=%ld\\n\", "
