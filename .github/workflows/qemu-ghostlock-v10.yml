@@ -8,9 +8,13 @@ on:
         required: false
         default: '0'
       selpad:
-        description: 'pad bytes in core_sys_select before stack_fds (push stack_fds down)'
+        description: 'pad bytes in core_sys_select before stack_fds (v14 showed no effect, keep 0)'
         required: false
-        default: '160'
+        default: '0'
+      wpad:
+        description: 'wrapper pad bytes to push core_sys_select frame down'
+        required: false
+        default: '120'
 
 jobs:
   qemu-ghostlock:
@@ -43,6 +47,7 @@ jobs:
         env:
           GHOSTPAD: ${{ github.event.inputs.pad || '0' }}
           SELPAD: ${{ github.event.inputs.selpad || '160' }}
+          WPAD: ${{ github.event.inputs.wpad || '120' }}
         run: |
           python3 << 'PYEOF'
           import os
@@ -140,6 +145,29 @@ jobs:
                   done = True
                   break
           print('select.c stack_fds capture:', 'OK' if done else 'WARN')
+
+          # 3b) 包一层 wrapper：把 core_sys_select 帧整体下压（深度+1 + wpad），
+          #     让 stack_fds 下移，shift 从 -20 收窄到 [0,5]。wpad 参数化迭代。
+          wpad = int(os.environ.get('WPAD', '120'))
+          if 'ghostlock_wrap_select' not in g:
+              call_needle = 'ret = core_sys_select(n, inp, outp, exp, &ts);'
+              if call_needle in g:
+                  g = g.replace(call_needle,
+                                'ret = ghostlock_wrap_select(n, inp, outp, exp, &ts);', 1)
+                  wrapper = ("\nstatic noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n"
+                             "        fd_set __user *outp, fd_set __user *exp,\n"
+                             "        struct timespec64 *end_time)\n{\n"
+                             "    volatile char ghostlock_wpad[%d];\n"
+                             "    asm volatile(\"\" :: \"r\"(ghostlock_wpad));\n"
+                             "    pr_info(\"DBG wpad=%%px\\n\", (void *)ghostlock_wpad);\n"
+                             "    return core_sys_select(n, inp, outp, exp, end_time);\n}\n") % wpad
+                  g += wrapper
+                  open('linux-g/fs/select.c', 'w').write(g)
+                  print('select.c wrapper inserted (wpad=%d)' % wpad)
+              else:
+                  print('select.c wrapper WARN: call needle missing')
+          else:
+              print('select.c wrapper already present')
           import subprocess
           print('--- injected select.c lines ---')
           subprocess.run(['grep', '-n', 'DBG ', 'linux-g/fs/select.c'])
