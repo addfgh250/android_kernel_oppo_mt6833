@@ -155,12 +155,17 @@ jobs:
               call_needle = ('ret = core_sys_select(n, inp, outp, exp, to);\n'
                              '\tret = poll_select_copy_remaining(&end_time, tsp, 0, ret);')
               if call_needle in g:
-                  fwd = ('static noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n'
-                         '        fd_set __user *outp, fd_set __user *exp, struct timespec64 *end_time);\n\t')
                   g = g.replace(call_needle,
-                                fwd +
                                 'ret = ghostlock_wrap_select(n, inp, outp, exp, to);\n'
                                 '\tret = poll_select_copy_remaining(&end_time, tsp, 0, ret);', 1)
+                  fwd_needle = 'static long do_pselect(int n, fd_set __user *inp, fd_set __user *outp,'
+                  fwd = ('static noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n'
+                         '        fd_set __user *outp, fd_set __user *exp, struct timespec64 *end_time);\n\n')
+                  if fwd_needle in g:
+                      g = g.replace(fwd_needle, fwd + fwd_needle, 1)
+                      print('select.c fwd decl inserted')
+                  else:
+                      print('select.c fwd decl WARN: needle missing')
                   wrapper = ("\nstatic noinline int ghostlock_wrap_select(int n, fd_set __user *inp,\n"
                              "        fd_set __user *outp, fd_set __user *exp,\n"
                              "        struct timespec64 *end_time)\n{\n"
