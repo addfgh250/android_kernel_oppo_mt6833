@@ -8,42 +8,43 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
-      - name: Install openssh + bore
+      - name: Install openssh
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server curl > /dev/null 2>&1
-          curl -sL https://github.com/ekzhang/bore/releases/latest/download/bore-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
-          tar xzf /tmp/bore.tar.gz -C /tmp
-          /tmp/bore --version
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server > /dev/null 2>&1
           echo "installed"
 
       - name: Configure sshd
         run: |
-          # 随机密码（临时环境，6小时即焚）
-          PASS=$(head -c 12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-10)
+          PASS=$(openssl rand -base64 9 | tr -d '/+=' | cut -c1-10)
           echo "runner:$PASS" | sudo chpasswd
           sudo mkdir -p /run/sshd
-          echo "PasswordAuthentication yes" | sudo tee /etc/ssh/sshd_config.d/99-cloud.conf
-          echo "PermitRootLogin no" | sudo tee -a /etc/ssh/sshd_config.d/99-cloud.conf
+          echo "PasswordAuthentication yes" | sudo tee /etc/ssh/sshd_config.d/99-cloud.conf > /dev/null
           sudo sed -i 's/#\?Port 22/Port 2222/' /etc/ssh/sshd_config
-          echo "SSHPASS=$PASS" > /tmp/sshpass.txt
+          echo "$PASS" > /tmp/pass.txt
 
-      - name: Start sshd + bore tunnel
+      - name: Start sshd + reverse tunnel (tuns.sh)
         run: |
           sudo /usr/sbin/sshd
-          PASS=$(grep -o 'SSHPASS=.*' /tmp/sshpass.txt | cut -d= -f2)
-          nohup /tmp/bore local 2222 --to bore.pub > /tmp/bore.log 2>&1 &
-          # 等 bore 分配端口
-          for i in $(seq 1 20); do
-            PORT=$(grep -oE 'bore\.pub:[0-9]+' /tmp/bore.log | head -1)
-            if [ -n "$PORT" ]; then break; fi
-            sleep 2
+          PASS=$(cat /tmp/pass.txt)
+          # ssh -R 反向隧道到 tuns.sh（公共免费 sish 服务），无需下载客户端
+          nohup ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+            -o ExitOnForwardFailure=yes \
+            -R 0:localhost:2222 tuns.sh > /tmp/tuns.log 2>&1 &
+          # 等 tuns.sh 分配端口（输出形如 "tuns.sh:12345"）
+          for i in $(seq 1 30); do
+            INFO=$(grep -aoE 'tuns\.sh:[0-9]+|forwarded.*port [0-9]+|[0-9a-z]+\.tuns\.sh' /tmp/tuns.log | head -2 | tr '\n' ' ')
+            if [ -n "$INFO" ]; then break; fi
+            sleep 3
           done
           echo ""
           echo "############################################################"
           echo "=== SSH 连接信息 ==="
-          echo "ssh runner@bore.pub -p $(echo $PORT | cut -d: -f2)"
+          echo "隧道输出: $INFO"
           echo "密码: $PASS"
+          echo "端口: 见隧道输出（tuns.sh:PORT 或类似格式）"
+          echo "连接: ssh runner@tuns.sh -p <PORT>"
           echo "############################################################"
-          echo "会话保持近 6 小时"
+          echo "完整日志："
+          cat /tmp/tuns.log
           sleep 20400
