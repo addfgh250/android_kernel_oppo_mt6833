@@ -12,8 +12,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            xfce4 xfce4-terminal xvfb x11vnc novnc websockify tmate firefox-esr \
-            > /dev/null 2>&1
+            xfce4 xfce4-terminal xvfb x11vnc novnc websockify tmate
           echo "install done"
           ls /usr/share/novnc/vnc.html && echo "novnc ok"
 
