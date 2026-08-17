@@ -1,0 +1,51 @@
+name: cloud-desktop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Install desktop + VNC + tmate
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            xfce4 xfce4-terminal xvfb x11vnc novnc websockify tmate firefox-esr \
+            > /dev/null 2>&1
+          echo "install done"
+          ls /usr/share/novnc/vnc.html && echo "novnc ok"
+
+      - name: Start virtual desktop
+        run: |
+          export DISPLAY=:1
+          Xvfb :1 -screen 0 1280x800x24 &
+          sleep 3
+          dbus-launch xfce4-session &
+          sleep 5
+          x11vnc -display :1 -nopw -forever -localhost -shared -rfbport 5900 \
+            > /tmp/vnc.log 2>&1 &
+          sleep 3
+          websockify --web /usr/share/novnc 6080 localhost:5900 \
+            > /tmp/novnc.log 2>&1 &
+          sleep 3
+          echo "=== desktop ready (VNC 5900, noVNC 6080) ==="
+          cat /tmp/vnc.log | head -5
+
+      - name: Publish access via tmate
+        run: |
+          # tmate 建立共享会话 + 转发 noVNC 端口 6080
+          tmate -S /tmp/tmate.sock new-session -d -L 6080
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          echo "=== TMATE WEB ==="
+          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+          echo ""
+          echo "=== TMATE SSH ==="
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo ""
+          echo "连接方法："
+          echo "1) 浏览器打开 TMATE WEB 链接 → 页面下方找 6080 端口转发 → 点击打开 noVNC 网页"
+          echo "2) 或 SSH 连接 TMATE SSH 后，tmate 的 6080 转发同样在 web 会话中可见"
+          echo "桌面：Xfce4 1280x800，预装 firefox-esr / xfce4-terminal"
+          sleep 20400
