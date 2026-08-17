@@ -411,9 +411,10 @@ jobs:
             long rq = -1; int edeadlk = 0;
             for (int i = 1; i <= 3; i++) {
               errno = 0;
-              /* CMP val 必须 == f_wait 当前值(0)；nr_wake=1, nr_requeue=INT_MAX
-                 → 强制走 futex_proxy_trylock_atomic → rt_mutex 死锁检测 */
-              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 0, (void *)1, &f_pi_target[idx], 0x7fffffff);
+              /* SYSCALL_DEFINE6(futex) 参数映射（OPLUS futex.c 实锤）：
+                 val=nr_wake(必须1)  utime=nr_requeue(指针值)  val3=cmpval(=f_wait当前值0)
+                 → nr_requeue=INT_MAX 强制走 proxy trylock → 死锁检测 */
+              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 1, (void *)0x7fffffff, &f_pi_target[idx], 0);
               printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d idx=%d\n", i, rq, errno, idx);
               if (errno == 35) { edeadlk = 1; break; }
               if (rq >= 1) break;
