@@ -3,6 +3,9 @@ name: cloud-desktop
 on:
   workflow_dispatch:
 
+permissions:
+  gists: write
+
 jobs:
   desktop:
     runs-on: ubuntu-24.04
@@ -37,14 +40,30 @@ jobs:
           # tmate 建立共享会话 + 转发 noVNC 端口 6080（-L 是 tmate 顶层选项）
           tmate -S /tmp/tmate.sock -L 6080 new-session -d
           tmate -S /tmp/tmate.sock wait tmate-ready
+          WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
           echo "=== TMATE WEB ==="
-          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+          echo "$WEB"
           echo ""
           echo "=== TMATE SSH ==="
-          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo "$SSH"
           echo ""
-          echo "连接方法："
-          echo "1) 浏览器打开 TMATE WEB 链接 → 页面下方找 6080 端口转发 → 点击打开 noVNC 网页"
-          echo "2) 或 SSH 连接 TMATE SSH 后，tmate 的 6080 转发同样在 web 会话中可见"
+          echo "连接方法：浏览器打开 TMATE WEB 链接 → 页面找 6080 端口转发 → 打开 noVNC 网页"
           echo "桌面：Xfce4 1280x800，预装 xfce4-terminal"
+          echo "=== 中转到 gist（token 可读）==="
+          cat > /tmp/gist.json << GEOF
+          {
+            "description": "cloud desktop access run $GITHUB_RUN_ID",
+            "public": false,
+            "files": {
+              "tmate-conn.txt": {
+                "content": "TMATE_WEB: $WEB\nTMATE_SSH: $SSH\n"
+              }
+            }
+          }
+          GEOF
+          curl -sL -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/gists -d @/tmp/gist.json -o /tmp/gist-resp.json
+          echo "gist id: $(grep -o '"id":"[^"]*' /tmp/gist-resp.json | head -1)"
+          echo "=== 会话保持（近 6 小时）==="
           sleep 20400
