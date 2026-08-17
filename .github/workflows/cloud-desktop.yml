@@ -34,8 +34,8 @@ jobs:
 
       - name: Publish access via tmate
         run: |
-          # tmate 建立共享会话 + 转发 noVNC 端口 6080
-          tmate -S /tmp/tmate.sock new-session -d -L 6080
+          # tmate 建立共享会话 + 转发 noVNC 端口 6080（-L 是 tmate 顶层选项）
+          tmate -S /tmp/tmate.sock -L 6080 new-session -d
           tmate -S /tmp/tmate.sock wait tmate-ready
           echo "=== TMATE WEB ==="
           tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
@@ -46,5 +46,5 @@ jobs:
           echo "连接方法："
           echo "1) 浏览器打开 TMATE WEB 链接 → 页面下方找 6080 端口转发 → 点击打开 noVNC 网页"
           echo "2) 或 SSH 连接 TMATE SSH 后，tmate 的 6080 转发同样在 web 会话中可见"
-          echo "桌面：Xfce4 1280x800，预装 firefox-esr / xfce4-terminal"
+          echo "桌面：Xfce4 1280x800，预装 xfce4-terminal"
           sleep 20400
