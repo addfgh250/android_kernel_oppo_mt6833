@@ -8,20 +8,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
-      - name: Install desktop + VNC + tmate
+      - name: Install desktop + VNC
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            xfce4 xfce4-terminal xvfb x11vnc novnc websockify tmate
+            xfce4 xfce4-terminal xvfb x11vnc novnc websockify curl \
+            > /dev/null 2>&1
           echo "install done"
           ls /usr/share/novnc/vnc.html && echo "novnc ok"
+
+      - name: Install cloudflared
+        run: |
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          /tmp/cloudflared --version
 
       - name: Start virtual desktop
         run: |
           export DISPLAY=:1
           Xvfb :1 -screen 0 1280x800x24 &
           sleep 3
-          dbus-launch xfce4-session &
+          xfce4-session &
           sleep 5
           x11vnc -display :1 -nopw -forever -localhost -shared -rfbport 5900 \
             > /tmp/vnc.log 2>&1 &
@@ -30,22 +38,22 @@ jobs:
             > /tmp/novnc.log 2>&1 &
           sleep 3
           echo "=== desktop ready (VNC 5900, noVNC 6080) ==="
-          cat /tmp/vnc.log | head -5
 
-      - name: Publish access via tmate
+      - name: Publish via cloudflared tunnel
         run: |
-          # tmate 建立共享会话 + 转发 noVNC 端口 6080（-L 是 tmate 顶层选项）
-          tmate -S /tmp/tmate.sock -L 6080 new-session -d
-          tmate -S /tmp/tmate.sock wait tmate-ready
-          WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
-          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          nohup /tmp/cloudflared tunnel --url http://localhost:6080 \
+            > /tmp/cf.log 2>&1 &
+          # 等待 trycloudflare URL 出现（最多 60 秒）
+          for i in $(seq 1 30); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+            if [ -n "$URL" ]; then break; fi
+            sleep 2
+          done
           echo ""
           echo "############################################################"
-          echo "=== TMATE WEB（浏览器打开，找 6080 端口转发 → noVNC 桌面）==="
-          echo "$WEB"
-          echo ""
-          echo "=== TMATE SSH ==="
-          echo "$SSH"
+          echo "=== 云桌面地址（浏览器直接打开，noVNC 网页）==="
+          echo "$URL"
           echo "############################################################"
-          echo "桌面：Xfce4 1280x800；会话保持近 6 小时"
+          echo "桌面：Xfce4 1280x800，会话保持近 6 小时"
+          echo "若上面 URL 为空，看 /tmp/cf.log 或稍等后查看本步骤日志"
           sleep 20400
