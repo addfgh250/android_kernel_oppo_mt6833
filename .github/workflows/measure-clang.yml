@@ -63,12 +63,24 @@ jobs:
           # 关 LTO/CFI（.o 才能反汇编；锚点尺寸验证后再决定要不要 LTO 全链）
           scripts/config -d CONFIG_LTO -d CONFIG_LTO_CLANG -d CONFIG_THINLTO \
             -d CONFIG_CFI_CLANG -d CONFIG_CFI_CLANG_SHADOW -e CONFIG_LTO_NONE
+          # 绕过 prepare-compiler-check 的 stackprotector 检测（clang 下 cc-option 测不过）
+          # 金丝雀只影响帧总尺寸 ±16B，局部变量相对 SP 的偏移不变，测量仍可用
+          scripts/config -d CONFIG_CC_STACKPROTECTOR -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -d CONFIG_CC_STACKPROTECTOR_REGULAR -e CONFIG_CC_STACKPROTECTOR_NONE
           make ARCH=arm64 olddefconfig
           echo "--- LTO/opt config ---"
           grep -E "^CONFIG_(LTO|THINLTO|CFI|CC_OPTIMIZE|STACKPROTECTOR|FRAME_POINTER)" .config || true
 
       - name: Build 4 core objects with clang
         run: |
+          # 诊断：直测 stackprotector 与 /dev/null 全旗标编译，暴露真实错误
+          echo "=== diag: direct stackprotector test ==="
+          clang --target=aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/t.o; echo "rc=$?"
+          echo "=== diag: KBUILD_CFLAGS ==="
+          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="clang --target=aarch64-linux-gnu -Qunused-arguments" \
+            -f Makefile print-KBUILD_CFLAGS 2>&1 | head -5 || true
+          echo "=== build ==="
           # OPLUS 树有 GCC 专用旗标（如 -fno-var-tracking-assignments），
           # cc-option 测试带 -Werror → 未知旗标警告即失败。
           # 加 -Wno-unknown-warning-option -Wno-ignored-optimization-argument 豁免
