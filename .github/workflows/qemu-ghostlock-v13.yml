@@ -188,6 +188,7 @@ jobs:
           #include <stdlib.h>
           #include <signal.h>
           #include <setjmp.h>
+          #include <sys/mman.h>
 
           #define ANCHOR_COMM   (0x${INIT_TASK}ULL + 0x7e0)
           #define ANCHOR_BOOTID  0x${BOOT_ID}ULL
