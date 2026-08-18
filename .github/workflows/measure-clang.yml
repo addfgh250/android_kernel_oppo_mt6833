@@ -16,7 +16,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 gcc-plugin-dev > /dev/null
+          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 > /dev/null
           clang --version | head -1
           OBJDUMP=$(which llvm-objdump-18 || which llvm-objdump-17 || which llvm-objdump)
           echo "OBJDUMP=$OBJDUMP"
