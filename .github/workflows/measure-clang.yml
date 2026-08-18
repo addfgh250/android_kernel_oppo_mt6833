@@ -1,0 +1,172 @@
+name: measure-clang-frames
+
+on:
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 > /dev/null
+          clang --version | head -1
+          OBJDUMP=$(which llvm-objdump-18 || which llvm-objdump-17 || which llvm-objdump)
+          echo "OBJDUMP=$OBJDUMP"
+          "$OBJDUMP" --version | head -1
+
+      - name: Fetch OPLUS vendor tree
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/ref-src
+          cd /tmp/ref-src
+          git sparse-checkout set vendor/oplus 4.14.186
+          mkdir -p "$GITHUB_WORKSPACE/../vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/../vendor/"
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/vendor/"
+          ln -sfn oplus/kernel_4.14 "$GITHUB_WORKSPACE/vendor/kernel-4.14"
+          cp -rn 4.14.186/. "$GITHUB_WORKSPACE/"
+          cd "$GITHUB_WORKSPACE"
+          echo "vendor files: $(find "$GITHUB_WORKSPACE/../vendor" -type f | wc -l)"
+
+      - name: Prepare config (symlink fix + Kconfig fallback + LTO off)
+        run: |
+          find . -type l | while read L; do
+            if [ ! -e "$L" ]; then
+              T=$(readlink "$L")
+              rm -f "$L"
+              ln -s "$T" "$L"
+              if [ ! -e "$L" ]; then
+                echo "stub broken symlink: $L"
+                rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
+              else
+                echo "rebuilt symlink: $L"
+              fi
+            fi
+          done
+          grep -rhoP 'source\s+"[^"]+"' --include='Kconfig*' . \
+            | sed -E 's/.*"([^"]+)"/\1/' | grep -v '\$' | sort -u | while read F; do
+              if [ ! -f "$F" ]; then
+                echo "fix missing kconfig: $F"
+                mkdir -p "$(dirname "$F")"; touch "$F"
+              fi
+            done
+          cp arch/arm64/configs/wiko_gar_an60_defconfig .config
+          # 关 LTO/CFI（.o 才能反汇编；锚点尺寸验证后再决定要不要 LTO 全链）
+          scripts/config -d CONFIG_LTO -d CONFIG_LTO_CLANG -d CONFIG_THINLTO \
+            -d CONFIG_CFI_CLANG -d CONFIG_CFI_CLANG_SHADOW -e CONFIG_LTO_NONE
+          make ARCH=arm64 olddefconfig
+          echo "--- LTO/opt config ---"
+          grep -E "^CONFIG_(LTO|THINLTO|CFI|CC_OPTIMIZE|STACKPROTECTOR|FRAME_POINTER)" .config || true
+
+      - name: Build 4 core objects with clang
+        run: |
+          make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="clang --target=aarch64-linux-gnu -Qunused-arguments" \
+            kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
+            > clang-build.log 2>&1 || true
+          echo "=== build tail ==="
+          tail -25 clang-build.log
+          echo "=== objects ==="
+          ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o 2>&1
+
+      - name: Disassemble + extract frames
+        run: |
+          OBJDUMP=$(which llvm-objdump-18 || which llvm-objdump-17 || which llvm-objdump)
+          mkdir -p disasm
+          for obj in kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o; do
+            if [ -f "$obj" ]; then
+              "$OBJDUMP" -d --no-show-raw-insn "$obj" > "disasm/$(echo $obj | tr '/' '_').txt" 2>/dev/null
+            fi
+          done
+          ls -la disasm/
+          python3 << 'PYEOF'
+          import re, subprocess, os
+
+          targets = [
+            ('disasm/kernel_futex.o.txt', ['futex_wait_requeue_pi', 'do_futex', 'SyS_futex']),
+            ('disasm/fs_select.o.txt', ['core_sys_select', 'do_pselect', 'SyS_pselect6']),
+            ('disasm/kernel_locking_rtmutex.o.txt', ['rt_mutex_adjust_prio_chain', 'rt_mutex_adjust_pi', 'rt_mutex_init_waiter']),
+            ('disasm/kernel_sched_core.o.txt', ['__sched_setscheduler']),
+          ]
+          anchors = {'rt_mutex_adjust_prio_chain': 0x68c, 'rt_mutex_adjust_pi': 0xac,
+                     '__sched_setscheduler': 0x1144}  # 真机 panic 实测函数尺寸
+
+          for path, names in targets:
+              if not os.path.exists(path):
+                  print(f"!! missing {path}")
+                  continue
+              txt = open(path).read()
+              # parse functions: addr <name>: then instructions
+              funcs = {}
+              order = []
+              cur = None
+              for line in txt.splitlines():
+                  m = re.match(r'^([0-9a-f]+) <([^>]+)>:\s*$', line)
+                  if m:
+                      cur = int(m.group(1), 16)
+                      funcs[cur] = [m.group(2), []]
+                      order.append(cur)
+                      continue
+                  if cur is not None:
+                      funcs[cur][1].append(line)
+              addrs = sorted(funcs)
+              print(f"\n===== {path} ({len(funcs)} funcs) =====")
+              for name in names:
+                  found = None
+                  for a in addrs:
+                      if funcs[a][0] == name:
+                          found = a; break
+                  if found is None:
+                      print(f"-- {name}: NOT FOUND")
+                      continue
+                  size = None
+                  for i, a in enumerate(addrs):
+                      if a == found and i+1 < len(addrs):
+                          size = addrs[i+1] - found
+                  body = funcs[found][1]
+                  print(f"\n== {name} size={'0x%x'%size if size else '?'}" +
+                        (f"  [真机锚点 0x%x {'✓MATCH'%anchors[name] if size==anchors[name] else '✗DIFF'}]" % anchors[name] if name in anchors else ""))
+                  print("  prologue (first 10):")
+                  for l in body[:10]: print("   ", l.strip())
+                  # rt_waiter 定位：futex_wait_requeue_pi 里 rt_mutex_init_waiter 调用前的 x0
+                  if name == 'futex_wait_requeue_pi':
+                      for i, l in enumerate(body):
+                          if 'rt_mutex_init_waiter' in l:
+                              print("  --- around rt_mutex_init_waiter call ---")
+                              for k in range(max(0,i-8), min(len(body), i+2)):
+                                  print("   ", body[k].strip())
+                  if name == 'core_sys_select':
+                      for i, l in enumerate(body):
+                          if '__copy_from_user' in l:
+                              print("  --- around __copy_from_user call (fds copy) ---")
+                              for k in range(max(0,i-8), min(len(body), i+2)):
+                                  print("   ", body[k].strip())
+                  if name == 'rt_mutex_adjust_prio_chain' and size:
+                      # 真机崩溃点 = 函数起始 +0x104 处应是 trylock 调用链
+                      off = 0
+                      print("  --- 指令 @+0xfc..+0x10c (真机崩点 LR=+0x104) ---")
+                      for i, l in enumerate(body):
+                          m = re.match(r'^\s*([0-9a-f]+):\s', l)
+                          if m:
+                              off = int(m.group(1),16) - found
+                          if 0xfc <= off <= 0x10c:
+                              print("   ", l.strip())
+          PYEOF
+
+      - name: Upload disasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-frames-disasm
+          path: |
+            disasm/
+            clang-build.log
+            .config
