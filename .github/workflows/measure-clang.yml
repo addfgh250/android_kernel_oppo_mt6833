@@ -16,7 +16,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 > /dev/null
+          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev gcc-12-aarch64-linux-gnu binutils-aarch64-linux-gnu python3 > /dev/null
           clang --version | head -1
           OBJDUMP=$(which llvm-objdump-18 || which llvm-objdump-17 || which llvm-objdump)
           echo "OBJDUMP=$OBJDUMP"
@@ -89,6 +89,8 @@ jobs:
           # v4 修复：CC=clang 全局会让 scripts/（内核工具链）也走 clang，
           #   scripts/mod/empty.o 汇编失败。先用 gcc 预编 scripts，再 clang 编目标。
           echo "--- step A: prebuild scripts with gcc ---"
+          # 预剥离 -EL（MTK 遗留旗标，clang/GNU as 不认）
+          sed -i -E 's/(^|[[:space:]])-EL([[:space:]]|$)/\1\2/g' Makefile arch/arm64/Makefile 2>/dev/null || true
           make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- scripts > clang-build.log 2>&1 || true
           echo "--- step A tail+errors ---"
           tail -15 clang-build.log
