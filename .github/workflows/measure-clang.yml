@@ -16,7 +16,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 > /dev/null
+          sudo apt-get install -y -qq clang llvm lld flex bison bc libssl-dev binutils-aarch64-linux-gnu python3 gcc-plugin-dev > /dev/null
           clang --version | head -1
           OBJDUMP=$(which llvm-objdump-18 || which llvm-objdump-17 || which llvm-objdump)
           echo "OBJDUMP=$OBJDUMP"
@@ -67,6 +67,11 @@ jobs:
           # 金丝雀只影响帧总尺寸 ±16B，局部变量相对 SP 的偏移不变，测量仍可用
           scripts/config -d CONFIG_CC_STACKPROTECTOR -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -d CONFIG_CC_STACKPROTECTOR_REGULAR -e CONFIG_CC_STACKPROTECTOR_NONE
+          # gcc-plugins 需宿主 gcc-plugin-dev（已装）；保险起见直接关掉（与本测量无关）
+          scripts/config -d CONFIG_GCC_PLUGINS -d CONFIG_GCC_PLUGIN_ARM64 \
+            -d CONFIG_GCC_PLUGIN_LATENT_ENTROPY -d CONFIG_GCC_PLUGIN_STACKLEAK 2>/dev/null || true
+          # 关 modules/modversions：对象级构建不需要 modpost，少一重依赖
+          scripts/config -d CONFIG_MODULES -d CONFIG_MODVERSIONS
           make ARCH=arm64 olddefconfig
           echo "--- LTO/opt config ---"
           grep -E "^CONFIG_(LTO|THINLTO|CFI|CC_OPTIMIZE|STACKPROTECTOR|FRAME_POINTER)" .config || true
@@ -85,7 +90,9 @@ jobs:
           #   scripts/mod/empty.o 汇编失败。先用 gcc 预编 scripts，再 clang 编目标。
           echo "--- step A: prebuild scripts with gcc ---"
           make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- scripts > clang-build.log 2>&1 || true
-          tail -5 clang-build.log
+          echo "--- step A tail+errors ---"
+          tail -15 clang-build.log
+          grep -iE "error|No such|not found" clang-build.log | head -15
           echo "--- step B: build 4 objects with clang ---"
           # OPLUS 树有 GCC 专用旗标（如 -fno-var-tracking-assignments），
           # cc-option 测试带 -Werror → 未知旗标警告即失败。
@@ -96,6 +103,8 @@ jobs:
             >> clang-build.log 2>&1 || true
           echo "=== build tail ==="
           tail -25 clang-build.log
+          echo "=== build errors ==="
+          grep -iE "error|No such" clang-build.log | head -20
           echo "=== objects ==="
           ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o 2>&1
 
