@@ -81,13 +81,19 @@ jobs:
             CC="clang --target=aarch64-linux-gnu -Qunused-arguments" \
             -f Makefile print-KBUILD_CFLAGS 2>&1 | head -5 || true
           echo "=== build ==="
+          # v4 修复：CC=clang 全局会让 scripts/（内核工具链）也走 clang，
+          #   scripts/mod/empty.o 汇编失败。先用 gcc 预编 scripts，再 clang 编目标。
+          echo "--- step A: prebuild scripts with gcc ---"
+          make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- scripts > clang-build.log 2>&1 || true
+          tail -5 clang-build.log
+          echo "--- step B: build 4 objects with clang ---"
           # OPLUS 树有 GCC 专用旗标（如 -fno-var-tracking-assignments），
           # cc-option 测试带 -Werror → 未知旗标警告即失败。
           # 加 -Wno-unknown-warning-option -Wno-ignored-optimization-argument 豁免
           make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="clang --target=aarch64-linux-gnu -Qunused-arguments -Wno-unknown-warning-option -Wno-ignored-optimization-argument" \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
-            > clang-build.log 2>&1 || true
+            >> clang-build.log 2>&1 || true
           echo "=== build tail ==="
           tail -25 clang-build.log
           echo "=== objects ==="
