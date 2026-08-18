@@ -311,6 +311,7 @@ jobs:
             printf("REPRO waiter WAIT_REQUEUE_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
             r = futex(&f_pi_chain[idx], FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
             printf("REPRO waiter UNLOCK_PI ret=%ld errno=%d idx=%d\n", r, errno, idx);
+            __sync_synchronize(); route_done = 1;
             do_ghost_sigreturn();
             while (!owner_chain_done) usleep(1000);
             for (;;) sleep(60);
@@ -354,6 +355,11 @@ jobs:
               sleep(1);
             }
             sleep(2);
+            /* 等 waiter 超时返回（10s）并执行 sigreturn 栈拷贝 */
+            int guard = 0;
+            while (!route_done && guard < 150) { usleep(100000); guard++; }
+            printf("REPRO dance route_done=%d guard=%d\n", route_done, guard);
+            sleep(2);  /* 再给 consumer 时间完成 sched_setattr 链行走 */
             return edeadlk ? 35 : rq;
           }
 
