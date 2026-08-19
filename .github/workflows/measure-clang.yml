@@ -598,9 +598,13 @@ jobs:
           make -j4 CC=aarch64-linux-gnu-gcc-12 scripts > gcc-scripts.log 2>&1 || { echo "scripts prebuild FAILED"; tail -40 gcc-scripts.log; exit 1; }
           echo "scripts prebuild OK"
           # 强制 gcc 重编 4 个 .o，V=1 抓完整命令行
+          # 先剥掉内核树里所有裸 -Werror（OPLUS 硬加的，把 format/address 等 warning 当 error）
+          grep -rlE -- '-Werror([[:space:]]|$)' --include='Makefile' --include='*.mk' --include='Kbuild' . 2>/dev/null | while read f; do
+            sed -i -E 's/-Werror([[:space:]]|$)/\1/g' "$f"; echo "stripped -Werror: $f"
+          done
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
           make -j1 CC=aarch64-linux-gnu-gcc-12 V=1 \
-            KCFLAGS="-Wno-error=format -Wno-error=address" \
+            KCFLAGS="-Wno-error=format -Wno-error=address -Wno-error=declaration-after-statement -Wno-error=unused-variable" \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
             > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -40 gcc-cmds.log; exit 1; }
           echo "=== gcc OK, captured command samples ==="
