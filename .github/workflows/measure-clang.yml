@@ -575,6 +575,9 @@ jobs:
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|DEBUG_INFO)" .config
 
           # === measure-clang 追加：clang 测量环境 ===
+          # mtk_mcdi_api.h：官方 repo 剥离 mcdi 头，sched/core.c 引号引用同目录解析
+          cp -n drivers/misc/mediatek/base/power/mcdi/include/mtk_mcdi_api.h kernel/sched/ 2>/dev/null || true
+          ls -la kernel/sched/mtk_mcdi_api.h 2>&1 || echo "MCDI HEADER MISSING"
           # 关 LTO/CFI（.o 才能反汇编，锚点尺寸对比用）
           scripts/config -d CONFIG_LTO -d CONFIG_LTO_CLANG -d CONFIG_THINLTO \
             -d CONFIG_CFI_CLANG -d CONFIG_CFI_CLANG_SHADOW -e CONFIG_LTO_NONE
