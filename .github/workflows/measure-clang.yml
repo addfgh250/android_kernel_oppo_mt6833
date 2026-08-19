@@ -76,39 +76,78 @@ jobs:
           echo "--- LTO/opt config ---"
           grep -E "^CONFIG_(LTO|THINLTO|CFI|CC_OPTIMIZE|STACKPROTECTOR|FRAME_POINTER)" .config || true
 
-      - name: Build 4 core objects with clang
+      - name: Build with gcc (baseline) + capture V=1 commands
         run: |
-          # 诊断：直测 stackprotector 与 /dev/null 全旗标编译，暴露真实错误
-          echo "=== diag: direct stackprotector test ==="
-          clang --target=aarch64-linux-gnu -fstack-protector-strong -c -x c /dev/null -o /tmp/t.o; echo "rc=$?"
-          echo "=== diag: KBUILD_CFLAGS ==="
-          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC="clang --target=aarch64-linux-gnu -Qunused-arguments" \
-            -f Makefile print-KBUILD_CFLAGS 2>&1 | head -5 || true
-          echo "=== build ==="
-          # v4 修复：CC=clang 全局会让 scripts/（内核工具链）也走 clang，
-          #   scripts/mod/empty.o 汇编失败。先用 gcc 预编 scripts，再 clang 编目标。
-          echo "--- step A: prebuild scripts with gcc ---"
-          # 预剥离 -EL（MTK 遗留旗标，clang/GNU as 不认）
-          sed -i -E 's/(^|[[:space:]])-EL([[:space:]]|$)/\1\2/g' Makefile arch/arm64/Makefile 2>/dev/null || true
-          make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=aarch64-linux-gnu-gcc-12 scripts > clang-build.log 2>&1 || true
-          echo "--- step A tail+errors ---"
-          tail -15 clang-build.log
-          grep -iE "error|No such|not found" clang-build.log | head -15
-          echo "--- step B: build 4 objects with clang ---"
-          # OPLUS 树有 GCC 专用旗标（如 -fno-var-tracking-assignments），
-          # cc-option 测试带 -Werror → 未知旗标警告即失败。
-          # 加 -Wno-unknown-warning-option -Wno-ignored-optimization-argument 豁免
-          make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC="clang --target=aarch64-linux-gnu -Qunused-arguments -Wno-unknown-warning-option -Wno-ignored-optimization-argument" \
+          set -x
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make -j4 CC=aarch64-linux-gnu-gcc-12 scripts > gcc-scripts.log 2>&1 || { echo "scripts prebuild FAILED"; tail -40 gcc-scripts.log; exit 1; }
+          echo "scripts prebuild OK"
+          # 强制 gcc 重编 4 个 .o，V=1 抓完整命令行
+          touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
+          make -j1 CC=aarch64-linux-gnu-gcc-12 V=1 \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
-            >> clang-build.log 2>&1 || true
-          echo "=== build tail ==="
-          tail -25 clang-build.log
-          echo "=== build errors ==="
-          grep -iE "error|No such" clang-build.log | head -20
-          echo "=== objects ==="
-          ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o 2>&1
+            > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -40 gcc-cmds.log; exit 1; }
+          echo "=== gcc OK, captured command samples ==="
+          grep "aarch64-linux-gnu-gcc-12" gcc-cmds.log | head -6
+          ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o
+
+      - name: Rebuild 4 objects with clang (same command lines)
+        run: |
+          python3 << 'PYEOF'
+          import re, subprocess, sys, os
+          log = open('gcc-cmds.log').read()
+          targets = {
+              'kernel/futex.o': 'kernel/futex.c',
+              'fs/select.o': 'fs/select.c',
+              'kernel/locking/rtmutex.o': 'kernel/locking/rtmutex.c',
+              'kernel/sched/core.o': 'kernel/sched/core.c',
+          }
+          cmds = {}
+          for line in log.splitlines():
+              line = line.strip()
+              if not line.startswith('aarch64-linux-gnu-gcc-12'):
+                  continue
+              for obj, src in targets.items():
+                  if obj in line and src in line:
+                      cmds[obj] = line
+          missing = [t for t in targets if t not in cmds]
+          if missing:
+              print("MISSING captured commands for:", missing)
+              print("--- full gcc-cmds.log tail ---")
+              print('\n'.join(log.splitlines()[-40:]))
+              sys.exit(1)
+          print("captured %d/4 command lines" % len(cmds))
+          clang = ('clang --target=aarch64-linux-gnu -Qunused-arguments '
+                   '-Wno-unknown-warning-option -Wno-ignored-optimization-argument '
+                   '-Wno-unused-command-line-argument')
+          logf = open('clang-build.log', 'w')
+          ok = True
+          for obj in ['kernel/futex.o', 'fs/select.o', 'kernel/locking/rtmutex.o', 'kernel/sched/core.o']:
+              cmd = cmds[obj].replace('aarch64-linux-gnu-gcc-12', clang, 1)
+              # 剥掉 gcc 插件/专属旗标（若存在）
+              for bad in ['-fplugin=', '-fno-var-tracking-assignments ']:
+                  cmd = cmd.replace(bad, '')
+              print("### %s" % obj, file=logf, flush=True)
+              r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True)
+              logf.write(r.stdout)
+              logf.write(r.stderr)
+              logf.flush()
+              rc = r.returncode
+              print("%s rc=%d" % (obj, rc))
+              if rc != 0:
+                  ok = False
+                  print("--- errors ---")
+                  for l in (r.stderr + r.stdout).splitlines()[-20:]:
+                      print("ERR|", l)
+          logf.close()
+          print("=== objects after clang ===")
+          subprocess.run(['ls', '-la'] + list(targets.keys()))
+          if not ok:
+              sys.exit(1)
+          print("ALL 4 OBJECTS REBUILT WITH CLANG")
+          PYEOF
+          echo "=== clang error summary ==="
+          grep -iE "error:" clang-build.log | head -20 || true
 
       - name: Disassemble + extract frames
         run: |
