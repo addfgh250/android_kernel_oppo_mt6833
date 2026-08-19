@@ -600,6 +600,7 @@ jobs:
           # 强制 gcc 重编 4 个 .o，V=1 抓完整命令行
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
           make -j1 CC=aarch64-linux-gnu-gcc-12 V=1 \
+            KCFLAGS="-Wno-error=format -Wno-error=address" \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
             > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -40 gcc-cmds.log; exit 1; }
           echo "=== gcc OK, captured command samples ==="
