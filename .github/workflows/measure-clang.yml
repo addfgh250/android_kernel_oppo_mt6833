@@ -598,17 +598,23 @@ jobs:
           make -j4 CC=aarch64-linux-gnu-gcc-12 scripts > gcc-scripts.log 2>&1 || { echo "scripts prebuild FAILED"; tail -40 gcc-scripts.log; exit 1; }
           echo "scripts prebuild OK"
           # 强制 gcc 重编 4 个 .o，V=1 抓完整命令行
-          # 先剥掉内核树里所有裸 -Werror（OPLUS 硬加的，把 format/address 等 warning 当 error）
-          grep -rlE -- '-Werror([[:space:]]|$)' --include='Makefile' --include='*.mk' --include='Kbuild' . 2>/dev/null | while read f; do
-            sed -i -E 's/-Werror([[:space:]]|$)/\1/g' "$f"; echo "stripped -Werror: $f"
+          # gcc 包装器：过滤裸 -Werror（OPLUS 在未知文件里硬加的，把 format/address 等 warning 当 error）
+          cat > /tmp/gcc-wrap << 'GCCW'
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            [ "$a" = "-Werror" ] && continue
+            args+=("$a")
           done
+          exec aarch64-linux-gnu-gcc-12 "${args[@]}"
+          GCCW
+          chmod +x /tmp/gcc-wrap
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
-          make -j1 CC=aarch64-linux-gnu-gcc-12 V=1 \
-            KCFLAGS="-Wno-error=format -Wno-error=address -Wno-error=declaration-after-statement -Wno-error=unused-variable" \
+          make -j1 CC=/tmp/gcc-wrap V=1 \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
             > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -40 gcc-cmds.log; exit 1; }
           echo "=== gcc OK, captured command samples ==="
-          grep "aarch64-linux-gnu-gcc-12" gcc-cmds.log | head -6
+          grep "/tmp/gcc-wrap" gcc-cmds.log | head -4
           ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o
 
       - name: Rebuild 4 objects with clang (same command lines)
@@ -625,7 +631,7 @@ jobs:
           cmds = {}
           for line in log.splitlines():
               line = line.strip()
-              if not line.startswith('aarch64-linux-gnu-gcc-12'):
+              if not line.startswith('/tmp/gcc-wrap'):
                   continue
               for obj, src in targets.items():
                   if obj in line and src in line:
@@ -643,7 +649,7 @@ jobs:
           logf = open('clang-build.log', 'w')
           ok = True
           for obj in ['kernel/futex.o', 'fs/select.o', 'kernel/locking/rtmutex.o', 'kernel/sched/core.o']:
-              cmd = cmds[obj].replace('aarch64-linux-gnu-gcc-12', clang, 1)
+              cmd = cmds[obj].replace('/tmp/gcc-wrap', clang, 1)
               # 剥掉 gcc 插件/专属旗标（若存在）
               for bad in ['-fplugin=', '-fno-var-tracking-assignments ']:
                   cmd = cmd.replace(bad, '')
