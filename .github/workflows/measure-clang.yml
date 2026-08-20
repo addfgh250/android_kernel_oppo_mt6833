@@ -630,7 +630,8 @@ jobs:
           args=()
           for a in "$@"; do
             case "$a" in
-              -EL) continue ;;
+              -EL|-Wa,-EL|-mlittle-endian|-Wa,-mlittle-endian) continue ;;
+              -fno-integrated-as|-no-integrated-as) continue ;;
               -Werror|-Werror=*) continue ;;
             esac
             args+=("$a")
