@@ -7,7 +7,7 @@ on:
       - 'arch/arm64/configs/wiko_gar_an60_defconfig'
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     timeout-minutes: 300
     steps:
       - name: Checkout
