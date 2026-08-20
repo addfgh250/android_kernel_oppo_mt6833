@@ -1,0 +1,678 @@
+name: measure-lto-wiko
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+      - 'arch/arm64/configs/wiko_gar_an60_defconfig'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11
+          clang-11 --version | head -1
+          ld.lld-11 --version | head -1
+      - name: Fetch OPLUS vendor tree
+        run: |
+          # OPPO 官方仓库缺 vendor 私有代码（symlink 断链 + 硬缺失），
+          # 从完整备份仓库(MT6853 同代 BSP)拉取 vendor 树 + 参考内核树
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/whjddzyx/android_kernel_oppo_mtk6853 /tmp/ref-src
+          cd /tmp/ref-src
+          git sparse-checkout set vendor/oplus 4.14.186
+          # symlink target 是 ../../vendor/... → 目标是工作区上级的兄弟目录
+          mkdir -p "$GITHUB_WORKSPACE/../vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/../vendor/"
+          # 也有 symlink 用 ../../../vendor/...（工作区内，如 drivers/power/oplus），两处都放
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp -r vendor/oplus "$GITHUB_WORKSPACE/vendor/"
+          # oplus 头用 ../../../../kernel-4.14 引用（OPLUS 原布局名），kernel_4.14 补软链
+          ln -sfn oplus/kernel_4.14 "$GITHUB_WORKSPACE/vendor/kernel-4.14"
+          # 用参考树补官方 repo 硬缺失的文件/symlink（-n 不覆盖已有）
+          cp -rn 4.14.186/. "$GITHUB_WORKSPACE/"
+          cd "$GITHUB_WORKSPACE"
+          echo "vendor files: $(find "$GITHUB_WORKSPACE/../vendor" -type f | wc -l)"
+      - name: Prepare config
+        run: |
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # OPLUS patch 用了尖括号相对 include，gcc 找不到 -> 改引号形式
+          sed -i 's|#include <\.\./sched/sched\.h>|#include "../sched/sched.h"|' kernel/locking/rwsem.c
+          # vendor trace 头被 <trace/...> 引用，需放到 include/trace/（OPPO 构建脚本同款操作）
+          mkdir -p include/trace
+          cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/foreground_io_opt/trace/foreground_io_opt_trace.h" include/trace/
+          cp "$GITHUB_WORKSPACE/../vendor/oplus/kernel/oplus_performance/sched_assist/sched_assist_trace.h" include/trace/
+          cp drivers/gpu/drm/mediatek/mtk_layer_layout_trace.h include/trace/
+          # mtk_iommu_ext.h 参考树才有(MT6853 私有)，mach/mt_iommu.h 以 <...> 引用，需放到标准 -I 路径
+          cp drivers/iommu/mtk_iommu_ext.h drivers/misc/mediatek/include/mt-plat/mt6853/include/ 2>/dev/null || true
+          # auxadc 平台目录被剥离：真实 MTK_PLATFORM=mt6853（defconfig 1414 行），
+          # 用 mt6765 同族版补位到 mt6853 和 mt6833 两个目录
+          mkdir -p drivers/misc/mediatek/auxadc/mt6853 drivers/misc/mediatek/auxadc/mt6833
+          cp drivers/misc/mediatek/auxadc/mt6765/mtk_auxadc_hw.h drivers/misc/mediatek/auxadc/mt6853/
+          cp drivers/misc/mediatek/auxadc/mt6765/mtk_auxadc_hw.h drivers/misc/mediatek/auxadc/mt6833/
+          # ComboA 父目录头一劳永逸：给 ComboA/Makefile 加父目录 -I（autok.h/mtk_sd.h/sw-cqhci-crypto.h/dbg.h 全覆盖）
+          sed -i 's|ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA/$(MMC_FOLDER)|ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA\nccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA/$(MMC_FOLDER)|' drivers/mmc/host/mediatek/ComboA/Makefile
+          # ppm：mtk_ppm_internal.h(inc/) 引号 include mtk_ppm_platform.h → 同目录必须有，拷进 inc/ 最稳
+          cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/inc/ 2>/dev/null || true
+          # swpm：common.h 尖括号引用 mtk_swpm_platform.h，头在 mt6833 子目录但 -I 没生效
+          # 拷到 include/swpm_v1/ 同目录（通用规则随后把尖括号转引号）
+          cp drivers/misc/mediatek/base/power/swpm_v1/mt6833/mtk_swpm_platform.h drivers/misc/mediatek/base/power/include/swpm_v1/ 2>/dev/null || true
+          # types.h 被 OPPO 剥离了裸 u64/s64 typedef（4.14 原版有），CONFIG_ARCH_DMA_ADDR_T_64BIT=y 时必炸
+          python3 - << 'PYTYPES'
+          import re
+          p = 'include/linux/types.h'
+          c = open(p).read()
+          flat = re.sub(r'\s+', ' ', c)
+          need = ['u64', 's64', 'u32', 's32', 'u16', 's16', 'u8', 's8']
+          missing = [t for t in need if ('typedef __' + t + ' ' + t + ';') not in flat]
+          if missing:
+              block = '\n'.join('typedef __%s %s;' % (t, t) for t in missing)
+              c, n = re.subn(r'(typedef\s+__s64\s+int64_t;)',
+                             lambda m: m.group(1) + '\n' + block, c, count=1)
+              open(p, 'w').write(c)
+              print('types.h typedefs restored:', missing, 'n=', n)
+          else:
+              print('types.h typedefs complete')
+          PYTYPES
+          # 昨晚现场修复固化：OPPO 剥离了 types.h 的 stddef 链（offsetof 断供）和 uuid.h 的 string.h（memcmp/memcpy）
+          # stddef.h 含 enum bool，汇编文件(entry.S 等)也过 types.h，必须 __ASSEMBLY__ 保护
+          python3 - << 'PYSTD'
+          p = 'include/linux/types.h'
+          c = open(p).read()
+          c = c.replace('#include <uapi/linux/types.h>',
+                        '#include <uapi/linux/types.h>\n#ifndef __ASSEMBLY__\n#include <linux/stddef.h>\n#endif', 1)
+          open(p, 'w').write(c)
+          print('stddef.h guarded include added')
+          PYSTD
+          sed -i 's|#include <uapi/linux/uuid.h>|#include <uapi/linux/uuid.h>\n#include <linux/string.h>|' include/linux/uuid.h
+          # ComboA 平台子目录引用父目录 autok.h（引号 include，但父目录不在 -I 上）：拷贝进平台目录
+          cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6833/
+          cp drivers/mmc/host/mediatek/ComboA/autok.h drivers/mmc/host/mediatek/ComboA/mt6853/
+          # gcc-12 对 gnu89 inline 语义变化：声明+定义都去掉 inline（最稳）
+          # 注意：sed 每次从原始仓库文件开始，pattern 必须匹配原始内容
+          sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
+          sed -i 's/^inline void ksm_flock/void ksm_flock/' block/keyslot-manager.c
+          # blk_crypto_flock 同样的 gnu89 inline 问题（dm.c 调用处报 always_inline body not available）
+          sed -i 's/^inline void blk_crypto_flock/extern void blk_crypto_flock/' include/linux/blk-crypto.h
+          sed -i 's/^inline void blk_crypto_flock/void blk_crypto_flock/' block/blk-crypto.c
+          # fair.c 6107 声明缺返回类型（OPPO 代码 bug），补 void
+          sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
+          # 修复仍断链的 symlink
+          find . -type l | while read L; do
+            if [ ! -e "$L" ]; then
+              T=$(readlink "$L")
+              rm -f "$L"
+              ln -s "$T" "$L"
+              if [ ! -e "$L" ]; then
+                echo "stub broken symlink: $L"
+                rm -f "$L"; mkdir -p "$L"; touch "$L/Kconfig"
+              else
+                echo "rebuilt symlink: $L"
+              fi
+            fi
+          done
+          # 兜底: Kconfig source 引用缺失文件
+          grep -rhoP 'source\s+"[^"]+"' --include='Kconfig*' . \
+            | sed -E 's/.*"([^"]+)"/\1/' | grep -v '\$' | sort -u | while read F; do
+              if [ ! -f "$F" ]; then
+                echo "fix missing kconfig: $F"
+                mkdir -p "$(dirname "$F")"; touch "$F"
+              fi
+            done
+          cp arch/arm64/configs/wiko_gar_an60_defconfig .config
+          # charger 头 else 分支是高通 msm8976（vendor 缺失），强制走 MTK6833 分支
+          echo "CONFIG_OPLUS_CHARGER_MTK=y" >> .config
+          echo "CONFIG_OPLUS_CHARGER_MTK6833=y" >> .config
+          # OPLUS 剥离了 linux/wakelock.h（4.14 上游无此头，Android 生态头）-> wakeup_source shim
+          cat > include/linux/wakelock.h << 'WAKELOCKEOF'
+          #ifndef _LINUX_WAKELOCK_H
+          #define _LINUX_WAKELOCK_H
+
+          #include <linux/jiffies.h>
+          #include <linux/pm_wakeup.h>
+
+          enum {
+          	WAKE_LOCK_SUSPEND,
+          	WAKE_LOCK_IDLE,
+          	WAKE_LOCK_TYPE_COUNT
+          };
+
+          struct wake_lock {
+          	struct wakeup_source ws;
+          };
+
+          static inline void wake_lock_init(struct wake_lock *lock, int type,
+          				  const char *name)
+          {
+          	wakeup_source_init(&lock->ws, name);
+          }
+
+          static inline void wake_lock_destroy(struct wake_lock *lock)
+          {
+          	wakeup_source_trash(&lock->ws);
+          }
+
+          static inline void wake_lock(struct wake_lock *lock)
+          {
+          	__pm_stay_awake(&lock->ws);
+          }
+
+          static inline void wake_lock_timeout(struct wake_lock *lock, long timeout)
+          {
+          	__pm_wakeup_event(&lock->ws, jiffies_to_msecs(timeout));
+          }
+
+          static inline void wake_unlock(struct wake_lock *lock)
+          {
+          	__pm_relax(&lock->ws);
+          }
+
+          static inline int wake_lock_active(struct wake_lock *lock)
+          {
+          	return lock->ws.active;
+          }
+
+          #endif
+          WAKELOCKEOF
+          # 模块签名密钥：华为私有 pem 不存在，清空（不影响符号偏移）
+          sed -i 's/^CONFIG_MODULE_SIG_KEY=.*/CONFIG_MODULE_SIG_KEY=""/' .config
+          # 真机无 HYBRIDSWAP，关掉避免 zram_drv.h 重复字段（OPPO Kconfig 默认开）
+          echo "# CONFIG_HYBRIDSWAP_CORE is not set" >> .config
+          # zram_drv.h OPPO patch 冲突修复：
+          # 1) 141行条件去掉 ZRAM_WRITEBACK（真机开着它，与129行块必然重复）
+          sed -i 's/#if (defined CONFIG_ZRAM_WRITEBACK) || (defined CONFIG_HYBRIDSWAP_CORE)/#ifdef CONFIG_HYBRIDSWAP_CORE/' drivers/block/zram/zram_drv.h
+          # 2) union 加 blk_idx 成员（zram_drv.c:697 宏展开需要；union 大小不变）
+          sed -i 's/\t\tunsigned long element;/\t\tunsigned long element;\n\t\tunsigned long blk_idx;/' drivers/block/zram/zram_drv.h
+          # flashlight/oplus 用 <richtek/rt-flashlight.h> 尖括号 -> 需要 -I 到 flashlight 目录
+          sed -i '1i ccflags-y += -I$(srctree)/drivers/misc/mediatek/flashlight' drivers/misc/mediatek/flashlight/Makefile
+          # clkdbg-mt6833.c 尖括号 include 同目录头 -> 改引号
+          sed -i 's|#include <clk-mux.h>|#include "clk-mux.h"|' drivers/clk/mediatek/clkdbg-mt6833.c
+          # cpuidle-mediatek.c 尖括号 include -> 引号
+          sed -i 's|#include <dt_idle_states.h>|#include "dt_idle_states.h"|' drivers/cpuidle/cpuidle-mediatek.c
+          # oplus_ext_amp 函数定义在 vendor 但无 Makefile 引用 -> stub 替代
+          # （stub 定义必须放在调用点之前，插到第一个 #include 后）
+          python3 - << 'PYAMP'
+          p = 'sound/soc/mediatek/mt6833/mt6833-mt6359.c'
+          c = open(p).read()
+          c = c.replace('oplus_ext_amp_recv_enable', 'stub_oplus_ext_amp_recv_enable')
+          c = c.replace('oplus_ext_amp_r_enable', 'stub_oplus_ext_amp_r_enable')
+          stub = ('static void stub_oplus_ext_amp_recv_enable(int en) {}\n'
+                  'static void stub_oplus_ext_amp_r_enable(int en) {}\n')
+          idx = c.find('#include')
+          c = c[:idx] + stub + c[idx:]
+          open(p, 'w').write(c)
+          PYAMP
+          # 通用修复：尖括号 include 引用同目录头（gcc 对 <> 不搜当前目录，OPPO/MTK 代码通病）
+          # 全树扫描：无路径前缀的 #include <xxx.h> 且同目录存在该头 -> 转引号
+          # 用 python 正则做，规避 sed 分隔符/ERE 的静默不匹配坑
+          python3 - << 'PYINC'
+          import os, re
+          pat = re.compile(r'#include\s*<([^/>]+\.h)>')
+          total = 0
+          # 带路径的尖括号 include（<dir/name.h>）：若 name.h 就在同目录 → 转引号 basename
+          pat2 = re.compile(r'#include\s*<([^>]+)>')
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              if 'uapi' in root.split(os.sep):
+                  continue
+              if root.startswith(('./scripts', './tools', './usr')):
+                  continue
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      with open(p, encoding='utf-8', errors='surrogateescape') as f:
+                          c = f.read()
+                  except OSError:
+                      continue
+                  out = pat.sub(
+                      lambda m: ('#include "%s"' % m.group(1))
+                                if os.path.exists(os.path.join(root, m.group(1)))
+                                else m.group(0),
+                      c)
+                  def repl2(m):
+                      # 只处理 <dir/name.h> 且包含文件恰好位于名为 dir 的目录中的情况
+                      # （如 ccu_ext_interface/ccu_ext_interface.h）；加自引用防护
+                      inc_dir = os.path.dirname(m.group(1))
+                      base = os.path.basename(m.group(1))
+                      if (inc_dir == os.path.basename(root) and base != fn
+                              and base.endswith('.h')
+                              and os.path.exists(os.path.join(root, base))):
+                          return '#include "%s"' % base
+                      return m.group(0)
+                  out = pat2.sub(repl2, out)
+                  if out != c:
+                      with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                          f.write(out)
+                      total += 1
+                      print('fixed: %s' % p)
+          print('total fixed files:', total)
+          PYINC
+          # 尖括号相对路径 include（<../xx.h>）gcc 按 cwd 解析必炸 -> 转引号（相对源文件目录）
+          python3 - << 'PYINC2'
+          import os, re
+          pat = re.compile(r'#include <(\.\./[^>]+\.h)>')
+          total = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      dst = os.path.normpath(os.path.join(root, m.group(1)))
+                      if os.path.exists(dst):
+                          return '#include "%s"' % m.group(1)
+                      return m.group(0)
+                  out = pat.sub(repl, cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      total += 1
+                      print('relative-include fixed:', p)
+          print('relative-include total:', total)
+          PYINC2
+          # inc/ 目录内的头用 "inc/xxx.h" 自引用（如 cam_qos.h -> inc/camera_isp.h）
+          # 引号 include 相对源文件目录解析，inc/inc/ 不存在 -> 目标在同目录时去掉前缀
+          python3 - << 'PYINC3'
+          import os, re
+          total = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              if root.startswith(('./scripts', './tools', './usr')):
+                  continue
+              if os.path.basename(root) != 'inc':
+                  continue
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      if os.path.exists(os.path.join(root, m.group(1))):
+                          return '#include "%s"' % m.group(1)
+                      return m.group(0)
+                  out = re.sub(r'#include "inc/([^"]+)"', repl, cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      total += 1
+                      print('inc-prefix fixed:', p)
+          print('inc-prefix total:', total)
+          PYINC3
+          # 尖括号带子路径 include（<suspend/xxx.h>）从当前目录可解析 -> 转引号（相对源文件目录）
+          python3 - << 'PYINC4'
+          import os, re
+          total = 0
+          pat = re.compile(r'#include <([a-zA-Z0-9_\-]+/[^>]+\.h)>')
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              if root.startswith(('./scripts', './tools', './usr')):
+                  continue
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      rel = m.group(1)
+                      if os.path.exists(os.path.join(root, rel)):
+                          return '#include "%s"' % rel
+                      return m.group(0)
+                  out = pat.sub(repl, cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      total += 1
+                      print('subpath-include fixed:', p)
+          print('subpath-include total:', total)
+          PYINC4
+          # ccu_ext_interface 尖括号自引用：保险起见显式转引号（诊断+兜底）
+          grep -n "ccu_ext_interface.h" drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/ccu_mailbox_extif.h || true
+          sed -i 's|#include <ccu_ext_interface/ccu_ext_interface.h>|#include "ccu_ext_interface.h"|' drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/*.h
+          # ccu_mailbox_extif.h 引号自引用仍带目录前缀 -> 去前缀（同目录直接 basename，只改本目录内文件）
+          sed -i 's|#include "ccu_ext_interface/\([^"]*\)"|#include "\1"|' drivers/misc/mediatek/ccu/src/mt6833/ccu_ext_interface/*.h
+          # mtk_battery.c 用了 IMM_ API 但没 include 声明（mtk_auxadc.h 有 extern，Makefile 无 -I auxadc）
+          sed -i 's|#include <mtk_gauge_class.h>|#include <mtk_gauge_class.h>\nextern int IMM_IsAdcInitReady(void);\nextern int IMM_GetOneChannelValue(int dwChannel, int data[4], int *rawdata);|' drivers/power/supply/mediatek/battery/mtk_battery.c
+          # ppm_v3 的 mt6853 平台头被剥离：用 mt6785 同族版补位（mt6833 也补一份）
+          cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6853/
+          cp drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6785/mtk_ppm_platform.h drivers/misc/mediatek/base/power/ppm_v3/src/mach/mt6833/ 2>/dev/null || true
+          # 通用规则（循环跑直到稳定）：子目录引用的父目录头 → 拷进子目录 + 尖括号转引号
+          # 拷贝过去的头自身还会引用更多父目录头，所以要迭代多轮
+          for round in 1 2 3 4 5; do
+            python3 - << 'PYPP'
+          import os, re, shutil
+          pat = re.compile(r'#include\s*[<"]([^/>]+\.h)[>"]')
+          # 全树头索引（basename -> [paths]），父链找不到时唯一命中才拷
+          # 排除其他架构（powerpc 假头污染）和 C 标准头名（gcc 自带）
+          SYS_HEAD_BLACKLIST = {'stdbool.h', 'stdint.h', 'stddef.h', 'stdio.h',
+                                'stdlib.h', 'string.h', 'types.h', 'limits.h',
+                                'errno.h', 'unistd.h', 'fcntl.h'}
+          index = {}
+          for r2, d2, f2 in os.walk('.'):
+              d2[:] = [x for x in d2 if x != '.git']
+              if r2.startswith(('./scripts', './tools', './usr')):
+                  continue
+              if r2.startswith('./arch') and 'arm64' not in r2:
+                  continue
+              if r2.startswith('./Documentation'):
+                  continue
+              for f2 in f2:
+                  if f2.endswith('.h') and f2 not in SYS_HEAD_BLACKLIST:
+                      index.setdefault(f2, []).append(os.path.join(r2, f2))
+          fixed = 0
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [x for x in dirs if x != '.git']
+              if 'uapi' in root.split(os.sep):
+                  continue
+              if root.startswith(('./scripts', './tools', './usr')):
+                  continue
+              for fn in files:
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      c = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  def repl(m):
+                      h = m.group(1)
+                      dst = os.path.join(root, h)
+                      if not os.path.exists(dst):
+                          pdir = os.path.dirname(root)
+                          while pdir and os.path.dirname(pdir) != pdir:
+                              cand = os.path.join(pdir, h)
+                              if os.path.exists(cand):
+                                  shutil.copyfile(cand, dst)
+                                  print('parent-copied:', cand, '->', dst)
+                                  break
+                              pdir = os.path.dirname(pdir)
+                          if not os.path.exists(dst):
+                              cands = index.get(h, [])
+                              if len(cands) == 1 and os.path.exists(cands[0]):
+                                  shutil.copyfile(cands[0], dst)
+                                  print('index-copied:', cands[0], '->', dst)
+                      if m.group(0).startswith('#include <') and os.path.exists(dst):
+                          return '#include "%s"' % h
+                      return m.group(0)
+                  out = pat.sub(repl, c)
+                  if out != c:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      fixed += 1
+          print('parent-include fixed files:', fixed)
+          PYPP
+          done
+          # PYPP 把 ion/ion.h 拷进 mtk/ 后，其 ../uapi/ion.h 相对引用指向 ion/uapi/ → 补一份
+          mkdir -p drivers/staging/android/ion/uapi
+          cp drivers/staging/android/uapi/ion.h drivers/staging/android/ion/uapi/ 2>/dev/null || true
+          # ufs-mtk-platform.{c,h} 引用两层之上的 ufs.h/ufshcd.h → 改相对路径
+          sed -i 's|#include "ufs.h"|#include "../../ufs.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
+          sed -i 's|#include "ufshcd.h"|#include "../../ufshcd.h"|' drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.h drivers/scsi/ufs/mediatek/mt6853/ufs-mtk-platform.c
+          # ufs_quirks.h/unipro.h/ufs-mtk.h 同层引用 → -I 到 ufs 根一次性解决
+          sed -i '1i ccflags-y += -I$(srctree)/drivers/scsi/ufs' drivers/scsi/ufs/Makefile
+          # LPM mt6833.c 用 <suspend/mt6833_suspend.h>，suspend/ 是 mt6833 子目录 → -I 到 mt6833
+          sed -i '1i ccflags-y += -I$(srctree)/drivers/misc/mediatek/lpm/modules/platform/mt6833' drivers/misc/mediatek/lpm/modules/platform/mt6833/Makefile
+          # trace 头全量搬运到 include/trace/（define_trace.h 以 <trace/xxx.h> 引用）
+          find drivers -type f \( -name '*_trace.h' -o -name '*_events.h' -o -name 'trace_*.h' \) ! -name 'trace_events.h' -exec cp -n {} include/trace/ \; 2>/dev/null || true
+          # define_trace.h 按 TRACE_INCLUDE_PATH ./inc 解析 -> 需要 include/trace/inc/
+          cp -rn drivers/misc/mediatek/cameraisp/src/mt6853/inc include/trace/
+          # ufs 平台子目录引用多个顶层头（quirks/unipro/ufshcd 系列），全量补进平台目录
+          for d in mt6833 mt6853; do
+            cp -n drivers/scsi/ufs/*.h drivers/scsi/ufs/mediatek/$d/ 2>/dev/null || true
+          done
+          ls drivers/scsi/ufs/mediatek/mt6853/*.h | head -8
+          # lpm suspend 子目录引父目录头（mt6833.h -> mt6833_common.h 连锁），全量塞
+          cp -n drivers/misc/mediatek/lpm/modules/platform/mt6833/*.h drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ 2>/dev/null || true
+          cp -n drivers/misc/mediatek/lpm/modules/platform/mt6853/*.h drivers/misc/mediatek/lpm/modules/platform/mt6853/suspend/ 2>/dev/null || true
+          # 官方 suspend 头用尖括号引同目录头，拷完后必须转引号（尖括号不搜同目录）
+          python3 - << 'PYSUS'
+          import os, re
+          pat = re.compile(r'#include\s*<([^/>]+\.h)>')
+          for d in ['drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend',
+                    'drivers/misc/mediatek/lpm/modules/platform/mt6853/suspend']:
+              if not os.path.isdir(d):
+                  continue
+              for fn in sorted(os.listdir(d)):
+                  if not fn.endswith(('.c', '.h')):
+                      continue
+                  p = os.path.join(d, fn)
+                  try:
+                      cc = open(p, encoding='utf-8', errors='surrogateescape').read()
+                  except OSError:
+                      continue
+                  out = pat.sub(lambda m: ('#include "%s"' % m.group(1))
+                                if os.path.exists(os.path.join(d, m.group(1)))
+                                else m.group(0), cc)
+                  if out != cc:
+                      open(p, 'w', encoding='utf-8', errors='surrogateescape').write(out)
+                      print('suspend-fixed:', p)
+          PYSUS
+          ls drivers/misc/mediatek/lpm/modules/platform/mt6833/suspend/ | head -8
+          # TEE 私有头（公开仓库剥离）：从 Asgore 完整树拉全套 GP 头
+          for H in tee_client_api tee_client_api_cust tee_client_api_imp tee_client_types tee_client_error; do
+            curl -sL -o include/$H.h https://raw.githubusercontent.com/Asgore-Dreemur/kernel_oppo_mt6833/main/drivers/misc/mediatek/gud/500/MobiCoreDriver/public/GP/$H.h 2>/dev/null || true
+          done
+          ls -la include/tee_client*.h 2>&1 | head -6
+          # 跨子树引用兜底（PYPP 全树索引是唯一命中才拷，这里显式保底）
+          cp -f drivers/misc/mediatek/mmdvfs/mmdvfs_pmqos.h drivers/gpu/drm/mediatek/ 2>/dev/null || true
+          cp -f drivers/misc/mediatek/mdp/mt6833/mdp_engine.h drivers/misc/mediatek/mdp/ 2>/dev/null || true
+          ls -la drivers/misc/mediatek/mdp/mdp_engine.h drivers/gpu/drm/mediatek/mmdvfs_pmqos.h 2>&1 | head -4
+          # sspm_reservedmem.h 公开树缺失（v2 版在子目录），stub 完整对齐 v2 头（guard 同名防 redefinition）
+          cat > include/sspm_reservedmem.h << 'SSPMEOF'
+          #ifndef __SSPM_RESERVED_H__
+          #define __SSPM_RESERVED_H__
+
+          #include <linux/types.h>
+
+          struct sspm_reserve_mblock {
+          	u32 num;
+          	u64 start_phys;
+          	u64 start_virt;
+          	u64 size;
+          };
+
+          phys_addr_t sspm_reserve_mem_get_phys(unsigned int id);
+          phys_addr_t sspm_reserve_mem_get_virt(unsigned int id);
+          phys_addr_t sspm_reserve_mem_get_size(unsigned int id);
+          int sspm_reserve_memory_init(void);
+          void sspm_set_emi_mpu(phys_addr_t base, phys_addr_t size);
+          void sspm_lock_emi_mpu(void);
+
+          #endif
+          SSPMEOF
+          # 链接期缺失符号 stub：直接追加到必编 .c 文件末尾（不碰 Makefile，避免 ifeq/endif 结构破坏）
+          cat >> drivers/staging/android/ion/ion.c << 'IONEOF'
+
+          bool ion_cnt_enable;
+          atomic_long_t ion_total_size;
+          IONEOF
+
+          cat >> drivers/staging/android/ion/ion.c << 'OPLUSEOF'
+
+          /* oplus/charger/tee link stubs (vendor-stripped; System.map only, not booted) */
+          /* hans (binder) + sia81xx (mt6359) stubs moved here: their .c files include conflicting headers */
+          int hans_report(int type, int caller_pid, int caller_uid, int target_pid, int target_uid, const char *rpc_name, int code) { return 0; }
+          void sia81xx_stop(void) {}
+          void sia81xx_start(void) {}
+          void soc_aux_init_only_sia81xx(void) {}
+          long chr_get_debug_level(void) { return 0; }
+          long is_project(void) { return 0; }
+          long charger_manager_notifier(void) { return 0; }
+          long mtk_is_TA_support_pd_pps(void) { return 0; }
+          long is_dual_charger_supported(void) { return 0; }
+          long get_eng_version(void) { return 0; }
+          long register_device_proc(void) { return 0; }
+          long notify_adapter_event(void) { return 0; }
+          long get_PCB_Version(void) { return 0; }
+          long charger_enable_vbus_ovp(void) { return 0; }
+          long oplus_daily_build(void) { return 0; }
+          long _wake_up_charger(void) { return 0; }
+          long sc_select_charging_current(void) { return 0; }
+          long oplus_vooc_get_fastchg_started(void) { return 0; }
+          long oplus_gauge_get_batt_current(void) { return 0; }
+          long oplus_chg_wake_update_work(void) { return 0; }
+          long oplus_chg_set_charger_type_unknown(void) { return 0; }
+          long oplus_chg_get_ui_soc(void) { return 0; }
+          long mtk_get_dynamic_cv(void) { return 0; }
+          long teec_release_shared_memory(void) { return 0; }
+          long teec_finalize_context(void) { return 0; }
+          long oplus_voocphy_get_cp_vbat(void) { return 0; }
+          long oplus_vooc_get_adapter_update_status(void) { return 0; }
+          long oplus_gauge_set_event(void) { return 0; }
+          long oplus_gauge_get_batt_temperature(void) { return 0; }
+          long oplus_chg_set_camera_status(void) { return 0; }
+          long oplus_chg_set_camera_on(void) { return 0; }
+          long oplus_chg_get_voocphy_support(void) { return 0; }
+          long is_typec_adapter(void) { return 0; }
+          long charger_manager_enable_power_path(void) { return 0; }
+          long teec_open_session(void) { return 0; }
+          long teec_invoke_command(void) { return 0; }
+          long teec_initialize_context(void) { return 0; }
+          long teec_close_session(void) { return 0; }
+          long teec_allocate_shared_memory(void) { return 0; }
+          long register_device_proc_for_ufsplus(void) { return 0; }
+          long oplus_vooc_reset_fastchg_after_usbout(void) { return 0; }
+          long oplus_vooc_get_fastchg_to_warm(void) { return 0; }
+          long oplus_vooc_get_fastchg_to_normal(void) { return 0; }
+          long oplus_kevent_fb_str(void) { return 0; }
+          long oplus_get_prop_status(void) { return 0; }
+          long oplus_get_chg_unwakelock(void) { return 0; }
+          long oplus_gauge_init(void) { return 0; }
+          long oplus_chg_show_vooc_logo_ornot(void) { return 0; }
+          long oplus_chg_set_otg_online(void) { return 0; }
+          long oplus_chg_set_chargerid_switch_val(void) { return 0; }
+          long oplus_chg_get_notify_flag(void) { return 0; }
+          long oplus_chg_clear_chargerid_info(void) { return 0; }
+          long oplus_chg_check_chip_is_null(void) { return 0; }
+          long oplus_chg_check_break(void) { return 0; }
+          long mtk_charger_int_handler(void) { return 0; }
+          long is_vooc_support_single_batt_svooc(void) { return 0; }
+          long get_Operator_Version(void) { return 0; }
+          long charger_manager_enable_chg_type_det(void) { return 0; }
+          long BATTERY_SetUSBState(void) { return 0; }
+          OPLUSEOF
+          # lpm debug common 用 <gs/xxx.h> 尖括号（-I 到 debug/common 被剥），拷 gs/ 到标准 include 路径
+          cp -r drivers/misc/mediatek/lpm/modules/debug/common/gs drivers/misc/mediatek/include/ 2>/dev/null || true
+          # ufs-mtk-trace.h 同款问题（define_trace.h ./ 解析），显式补拷 + 诊断
+          cp -n drivers/scsi/ufs/ufs-mtk-trace.h include/trace/ 2>/dev/null || true
+          ls include/trace/ | grep -iE "ufs|inc" || echo "UFS TRACE MISSING"
+          ls include/trace/ | head -20
+          make olddefconfig
+          # === measure-lto 关键：开真机实锤的 ThinLTO + CFI + STACKPROTECTOR_STRONG ===
+          scripts/config -e CONFIG_LTO -e CONFIG_LTO_CLANG -e CONFIG_THINLTO -d CONFIG_LTO_NONE \
+            -e CONFIG_CFI -e CONFIG_CFI_CLANG -e CONFIG_CFI_CLANG_SHADOW -d CONFIG_CFI_PERMISSIVE \
+            -e CONFIG_CC_STACKPROTECTOR_STRONG -d CONFIG_CC_STACKPROTECTOR_NONE -d CONFIG_CC_STACKPROTECTOR_REGULAR
+          make olddefconfig
+          echo "--- LTO/CFI/opt config ---"
+          grep -E "^CONFIG_(LTO|THINLTO|CFI|CC_STACKPROTECTOR|CC_OPTIMIZE|FRAME_POINTER)" .config
+          # 注意：不开 DEBUG_INFO（会漂移数据符号地址，破坏与真机布局一致性）
+          echo "--- key config ---"
+          grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|DEBUG_INFO)" .config
+      - name: Build vmlinux
+        run: |
+          echo "--- tree check ---"
+          ls -la kernel/sched/sched.h 2>&1 | head -2
+          # 关键修复双保险（Build 前最后一刻执行 + 诊断）
+          sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
+          sed -i 's/^inline void ksm_flock/void ksm_flock/' block/keyslot-manager.c
+          sed -i 's|#include <clk-mux.h>|#include "clk-mux.h"|' drivers/clk/mediatek/clkdbg-mt6833.c
+          sed -i 's|#include <dt_idle_states.h>|#include "dt_idle_states.h"|' drivers/cpuidle/cpuidle-mediatek.c
+          sed -i 's/extern oplus_get_cpu_util_mtk(/extern void oplus_get_cpu_util_mtk(/' kernel/sched/fair.c
+          sed -i 's/extern oplus_task_sched_boost(/extern void oplus_task_sched_boost(/' drivers/misc/mediatek/sched/sched_ctl.c
+          # oplus typec: patch 引用了 struct 里被剥离的 sbu_en_work 成员 -> 补成员
+          sed -i 's|\tstruct delayed_work poll_work;|\tstruct delayed_work poll_work;\n\tstruct delayed_work sbu_en_work;|' drivers/misc/mediatek/typec/tcpc/tcpc_mt6360.c 2>/dev/null || true
+          # oplus sensor: 原型1参数 vs 定义0参数 的代码 bug，定义补参数
+          sed -i 's/int register_lcdinfo_notifier() {/int register_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
+          sed -i 's/int unregister_lcdinfo_notifier() {/int unregister_lcdinfo_notifier(struct notifier_block *nb) {/' drivers/misc/mediatek/sensor/2.0/oplus_sensor_devinfo/sensor_devinfo.c 2>/dev/null || true
+          grep -n "ksm_flock" include/linux/keyslot-manager.h | head -2
+          grep -n "clk-mux.h" drivers/clk/mediatek/clkdbg-mt6833.c | head -1
+          ls kernel/sched/ 2>/dev/null | head -8
+          ls kernel/sched/ 2>/dev/null | wc -l
+          # MTK/OPPO 子目录 Makefile 大量带 -Werror，subdir-ccflags 在 KCFLAGS 之后追加压不住
+          # 只删 drivers/ 下的裸 -Werror（前后空白边界），不碰根 Makefile/scripts
+          # 也不能匹配 -Werror-xxx/-Werror=xxx（会留残渣破坏编译器检测）
+          find drivers -type f \( -name Makefile -o -name Kbuild \) \
+            -exec sed -i -E 's/(^|[[:space:]])-Werror([[:space:]]|$)/\1\2/g' {} +
+          echo "-Werror stripped (drivers only, bare flag only)"
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export KCFLAGS="-Wno-error=array-compare -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=unused-label -Wno-error=format -Wno-error=format-extra-args -Wno-error=duplicate-decl-specifier -Wno-error=parentheses -Wno-error=misleading-indentation -Wno-error=memset-elt-size -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer -Wno-error=use-after-free -Wno-error=stringop-overflow -Wno-error=stringop-overread -Wno-error=stringop-truncation -Wno-error=array-bounds -Wno-error=restrict -Wno-error=address -Wno-error=shift-count-overflow -Wno-error=switch-unreachable -Wno-error=unused-result -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=missing-prototypes"
+          # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
+          # measure-lto：换 clang-11（真机实锤版本），目标 aarch64-linux-gnu
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="clang-11 --target=aarch64-linux-gnu -Qunused-arguments" \
+            LD=ld.lld-11 \
+            LLVM_IAS=1 \
+            vmlinux
+      - name: Check System.map
+        run: |
+          ls -la System.map
+          head -3 System.map
+          echo "--- symbol check ---"
+          grep -E " (init_task|selinux_state|init_cred|init_user_ns)$" System.map || true
+      - name: Prepare vmlinux
+        run: |
+          aarch64-linux-gnu-objcopy --strip-debug vmlinux vmlinux.slim
+          ls -la vmlinux vmlinux.slim
+      - name: Measure anchors (LTO layout vs real device)
+        run: |
+          OBJDUMP=$(which llvm-objdump-11 || which llvm-objdump)
+          mkdir -p disasm
+          "$OBJDUMP" -d --no-show-raw-insn vmlinux > disasm/vmlinux.txt 2>/dev/null
+          python3 << 'PYEOF'
+          import re
+          txt = open('disasm/vmlinux.txt').read()
+          anchors = {
+              'rt_mutex_adjust_prio_chain': 0x68c,
+              'rt_mutex_adjust_pi': 0xac,
+              '__sched_setscheduler': 0x1144,
+          }
+          funcs = {}
+          order = []
+          cur = None
+          for line in txt.splitlines():
+              m = re.match(r'^([0-9a-f]+) <([^>]+)>:\s*$', line)
+              if m:
+                  cur = int(m.group(1), 16)
+                  funcs[cur] = m.group(2)
+                  order.append(cur)
+          addrs = sorted(funcs)
+          print('=== LTO 版函数尺寸 vs 真机锚点 ===')
+          for name, real in anchors.items():
+              found = None
+              for a in addrs:
+                  if funcs[a] == name:
+                      found = a; break
+              if found is None:
+                  print(f'{name}: NOT FOUND')
+                  continue
+              size = None
+              for i, a in enumerate(addrs):
+                  if a == found and i+1 < len(addrs):
+                      size = addrs[i+1] - found
+              status = 'MATCH' if size == real else 'diff'
+              print(f'{name}: 0x{size:x} [真机 0x{real:x}] {status}')
+          PYEOF
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lto-wiko
+          path: |
+            System.map
+            .config
+            vmlinux.slim
+            disasm/vmlinux.txt
