@@ -642,7 +642,7 @@ jobs:
           CLANGW
           chmod +x /tmp/clang-wrap
           # 老内核 vdso .S 用 named-arg 宏调用，clang 集成汇编器不认 → 改位置参数
-          sed -i 's/clock_gettime_return, shift=1/clock_gettime_return, 1/g' arch/arm64/kernel/vdso/gettimeofday.S
+          sed -i 's/clock_gettime_return, shift=1/clock_gettime_return 1/g' arch/arm64/kernel/vdso/gettimeofday.S
           grep -n "clock_gettime_return" arch/arm64/kernel/vdso/gettimeofday.S | head
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
           make -j1 CC=/tmp/clang-wrap KCFLAGS=-Wno-error V=1 \
