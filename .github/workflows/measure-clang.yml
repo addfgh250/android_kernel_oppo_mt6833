@@ -603,16 +603,18 @@ jobs:
           #!/bin/bash
           args=()
           for a in "$@"; do
-            [ "$a" = "-Werror" ] && continue
+            case "$a" in
+              -Werror|-Werror=*) continue ;;
+            esac
             args+=("$a")
           done
           exec aarch64-linux-gnu-gcc-12 "${args[@]}"
           GCCW
           chmod +x /tmp/gcc-wrap
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
-          make -j1 CC=/tmp/gcc-wrap V=1 \
+          make -j1 CC=/tmp/gcc-wrap KCFLAGS=-Wno-error V=1 \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
-            > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -40 gcc-cmds.log; exit 1; }
+            > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; echo "--- failing cmd ---"; grep -m1 "sched/core.c\|rtmutex.c\|select.c\|futex.c" gcc-cmds.log | head -c 1500; echo; tail -40 gcc-cmds.log; exit 1; }
           echo "=== gcc OK, captured command samples ==="
           grep "/tmp/gcc-wrap" gcc-cmds.log | head -4
           ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o
@@ -767,3 +769,4 @@ jobs:
             disasm/
             clang-build.log
             .config
+
