@@ -598,14 +598,13 @@ jobs:
           make -j4 CC=aarch64-linux-gnu-gcc-12 scripts > gcc-scripts.log 2>&1 || { echo "scripts prebuild FAILED"; tail -40 gcc-scripts.log; exit 1; }
           echo "scripts prebuild OK"
           # 强制 gcc 重编 4 个 .o，V=1 抓完整命令行
-          # gcc 包装器：过滤裸 -Werror 及 -Werror=xxx 变体（OPLUS 硬加的，把 warning 当 error）
+          # gcc 包装器：过滤裸 -Werror（OPLUS 在未知文件里硬加的，把 format/address 等 warning 当 error）
           cat > /tmp/gcc-wrap << 'GCCW'
           #!/bin/bash
           args=()
           for a in "$@"; do
             case "$a" in
-              -Werror)  continue ;;
-              -Werror=*) continue ;;
+              -Werror|-Werror=*) continue ;;
             esac
             args+=("$a")
           done
@@ -613,70 +612,46 @@ jobs:
           GCCW
           chmod +x /tmp/gcc-wrap
           touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
-          make -j1 CC=/tmp/gcc-wrap V=1 \
+          make -j1 CC=/tmp/gcc-wrap KCFLAGS=-Wno-error V=1 \
             kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
-            > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; tail -80 gcc-cmds.log; exit 1; }
+            > gcc-cmds.log 2>&1 || { echo "gcc build FAILED"; echo "--- failing cmd ---"; grep -m1 "sched/core.c\|rtmutex.c\|select.c\|futex.c" gcc-cmds.log | head -c 1500; echo; tail -40 gcc-cmds.log; exit 1; }
           echo "=== gcc OK, captured command samples ==="
           grep "/tmp/gcc-wrap" gcc-cmds.log | head -4
           ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o
 
-      - name: Rebuild 4 objects with clang (same command lines)
+      - name: Rebuild 4 objects with clang (make, same kbuild flags)
         run: |
-          python3 << 'PYEOF'
-          import re, subprocess, sys, os
-          log = open('gcc-cmds.log').read()
-          targets = {
-              'kernel/futex.o': 'kernel/futex.c',
-              'fs/select.o': 'fs/select.c',
-              'kernel/locking/rtmutex.o': 'kernel/locking/rtmutex.c',
-              'kernel/sched/core.o': 'kernel/sched/core.c',
-          }
-          cmds = {}
-          for line in log.splitlines():
-              line = line.strip()
-              if not line.startswith('/tmp/gcc-wrap'):
-                  continue
-              for obj, src in targets.items():
-                  if obj in line and src in line:
-                      cmds[obj] = line
-          missing = [t for t in targets if t not in cmds]
-          if missing:
-              print("MISSING captured commands for:", missing)
-              print("--- full gcc-cmds.log tail ---")
-              print('\n'.join(log.splitlines()[-40:]))
-              sys.exit(1)
-          print("captured %d/4 command lines" % len(cmds))
-          clang = ('clang --target=aarch64-linux-gnu -Qunused-arguments '
-                   '-Wno-unknown-warning-option -Wno-ignored-optimization-argument '
-                   '-Wno-unused-command-line-argument')
-          logf = open('clang-build.log', 'w')
-          ok = True
-          for obj in ['kernel/futex.o', 'fs/select.o', 'kernel/locking/rtmutex.o', 'kernel/sched/core.o']:
-              cmd = cmds[obj].replace('/tmp/gcc-wrap', clang, 1)
-              # 剥掉 gcc 插件/专属旗标（若存在）
-              for bad in ['-fplugin=', '-fno-var-tracking-assignments ']:
-                  cmd = cmd.replace(bad, '')
-              print("### %s" % obj, file=logf, flush=True)
-              r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True)
-              logf.write(r.stdout)
-              logf.write(r.stderr)
-              logf.flush()
-              rc = r.returncode
-              print("%s rc=%d" % (obj, rc))
-              if rc != 0:
-                  ok = False
-                  print("--- errors ---")
-                  for l in (r.stderr + r.stdout).splitlines()[-20:]:
-                      print("ERR|", l)
-          logf.close()
-          print("=== objects after clang ===")
-          subprocess.run(['ls', '-la'] + list(targets.keys()))
-          if not ok:
-              sys.exit(1)
-          print("ALL 4 OBJECTS REBUILT WITH CLANG")
-          PYEOF
-          echo "=== clang error summary ==="
+          set -x
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # clang 包装器：--gcc-toolchain 让 clang 找到 aarch64-linux-gnu-as；
+          # 滤 -EL（GNU as 专有，clang 集成汇编器不认）和 -Werror 系列
+          cat > /tmp/clang-wrap << 'CLANGW'
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            case "$a" in
+              -EL|-Wa,-EL|-mlittle-endian|-Wa,-mlittle-endian) continue ;;
+              -fno-integrated-as|-no-integrated-as) continue ;;
+              -Werror|-Werror=*) continue ;;
+            esac
+            args+=("$a")
+          done
+          exec clang --target=aarch64-linux-gnu --gcc-toolchain=/usr \
+            -Qunused-arguments -Wno-unknown-warning-option \
+            -Wno-ignored-optimization-argument -Wno-unused-command-line-argument "${args[@]}"
+          CLANGW
+          chmod +x /tmp/clang-wrap
+          # 老内核 vdso .S 用 named-arg 宏调用，clang 集成汇编器不认 → 改位置参数
+          sed -i 's/clock_gettime_return, shift=1/clock_gettime_return, 1/g' arch/arm64/kernel/vdso/gettimeofday.S
+          grep -n "clock_gettime_return" arch/arm64/kernel/vdso/gettimeofday.S | head
+          touch kernel/futex.c fs/select.c kernel/locking/rtmutex.c kernel/sched/core.c
+          make -j1 CC=/tmp/clang-wrap KCFLAGS=-Wno-error V=1 \
+            kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o \
+            > clang-build.log 2>&1 || { echo "clang build FAILED"; echo "--- failing cmd ---"; grep -m1 -B1 "error:" clang-build.log | head -c 2000; echo; tail -30 clang-build.log; exit 1; }
+          echo "=== objects after clang ==="
+          ls -la kernel/futex.o fs/select.o kernel/locking/rtmutex.o kernel/sched/core.o
           grep -iE "error:" clang-build.log | head -20 || true
+
 
       - name: Disassemble + extract frames
         run: |
@@ -770,3 +745,4 @@ jobs:
             disasm/
             clang-build.log
             .config
+
