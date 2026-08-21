@@ -647,9 +647,10 @@ jobs:
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           # 换 clang-11 后，gcc-12 专属的 -Wno-error=xxx warning 名 clang 不认，
           # 会被 -Wunknown-warning-option + -Werror 升级成 error -> 清空 gcc 专属项
-          # 但 PYTYPES 补的裸 typedef(与 int-ll64.h 重复)在 clang gnu11 下报 -Wtypedef-redefinition
-          # 会被 -Werror 升级成 error(补丁在 gcc 下必须)，clang 仅降级此 warning
-          export KCFLAGS="-Wno-typedef-redefinition"
+          # 但 OPPO/MTK 代码有老式函数定义/隐式声明等 warning，被内核默认的
+          # -Werror=strict-prototypes / -Werror=implicit-function-declaration 升级成 error
+          # （gcc 不报、clang 更严格）。量帧布局只需代码生成一致，warning 不影响布局 -> 全局 -Wno-error+降级 typedef
+          export KCFLAGS="-Wno-typedef-redefinition -Wno-error"
           # CC 环境变量会被内核 Makefile 覆盖，必须命令行传参
           # measure-lto：换 clang-11（真机实锤版本），目标 aarch64-linux-gnu
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
