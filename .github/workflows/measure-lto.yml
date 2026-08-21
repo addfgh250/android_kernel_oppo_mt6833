@@ -597,6 +597,17 @@ jobs:
           clang-11 --target=aarch64-linux-gnu -Qunused-arguments -Werror -fstack-protector-strong -c -x c /dev/null -o /tmp/stk.o && echo "SPP-OK" || echo "SPP-FAIL"
           clang-11 --target=aarch64-linux-gnu -Qunused-arguments -fstack-protector-strong -c -x c /dev/null -o /tmp/stk2.o && echo "SPP-NOWERROR-OK" || echo "SPP-NOWERROR-FAIL"
           clang-11 -v 2>&1 | grep -i "clang version" && echo "CCNAME=clang" || echo "CCNAME=gcc"
+          echo "=== DIAG2: dump KBUILD_CPPFLAGS/KBUILD_CFLAGS via include ==="
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          cat > /tmp/dump.mk << 'DUMPEOF'
+          include Makefile
+          .PHONY: dumpall
+          dumpall:
+          	@echo KBUILD_CPPFLAGS=[$(KBUILD_CPPFLAGS)]
+          	@echo KBUILD_CFLAGS=[$(KBUILD_CFLAGS)]
+          	@echo CC_OPTION_CFLAGS=[$(CC_OPTION_CFLAGS)]
+          DUMPEOF
+          CC="clang-11 --target=aarch64-linux-gnu -Qunused-arguments" make -s -f /tmp/dump.mk dumpall 2>&1 | head -5
           echo "--- tree check ---"
           ls -la kernel/sched/sched.h 2>&1 | head -2
           # 关键修复双保险（Build 前最后一刻执行 + 诊断）
