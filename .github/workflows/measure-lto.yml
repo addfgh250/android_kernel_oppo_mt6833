@@ -16,11 +16,16 @@ jobs:
           submodules: false
       - name: Install toolchain
         run: |
-          # ubuntu-24.04 源里无 clang-11（太老），改用 LLVM 官方 apt 源
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-snapshot.gpg 2>/dev/null || true
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-11 main" | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null 2>&1 || true
-          sudo apt-get update -qq || true
-          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11 || true
+          # ubuntu-24.04(noble) 的 LLVM 官方源没有 clang-11(最低 17)，真机是 LLVM 11，
+          # 改用 focal(ubuntu-20.04) 的 llvm-toolchain-focal-11 源装 clang-11 二进制(glibc 向后兼容可跑)
+          sudo dpkg --add-architecture i386
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-snapshot.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/focal/ llvm-toolchain-focal-11 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          # focal 主源(提供 libstdc++-9-dev 等 gcc-9 时代依赖)
+          echo "deb http://archive.ubuntu.com/ubuntu focal main universe" | sudo tee /etc/apt/sources.list.d/focal.list
+          sudo apt-get update -qq
+          # pin: 默认用 noble 的包，只有 focal 源能提供的(llvm-11 闭包)才从 focal 拉
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11
           clang-11 --version | head -1
           ld.lld-11 --version | head -1
       - name: Fetch OPLUS vendor tree
