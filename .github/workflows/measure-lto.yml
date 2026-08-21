@@ -7,7 +7,7 @@ on:
       - 'arch/arm64/configs/wiko_gar_an60_defconfig'
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - name: Checkout
@@ -16,8 +16,11 @@ jobs:
           submodules: false
       - name: Install toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11
+          # ubuntu-24.04 源里无 clang-11（太老），改用 LLVM 官方 apt 源
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-snapshot.gpg 2>/dev/null || true
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-11 main" | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null 2>&1 || true
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11 || true
           clang-11 --version | head -1
           ld.lld-11 --version | head -1
       - name: Fetch OPLUS vendor tree
