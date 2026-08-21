@@ -25,7 +25,13 @@ jobs:
           echo "deb http://archive.ubuntu.com/ubuntu focal main universe" | sudo tee /etc/apt/sources.list.d/focal.list
           sudo apt-get update -qq
           # pin: 默认用 noble 的包，只有 focal 源能提供的(llvm-11 闭包)才从 focal 拉
-          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11
+          sudo apt-get install -y -qq gcc-12-aarch64-linux-gnu libssl-dev flex bison bc clang-11 lld-11 llvm-11 llvm-11-tools
+          # 内核 LTO 会用无后缀的 llvm-nm/llvm-ar/llvm-objdump 等 -> 软链到 -11 后缀版
+          for t in nm ar objdump objcopy readelf strip ranlib; do
+            if [ -x /usr/bin/llvm-$t-11 ]; then sudo ln -sf /usr/bin/llvm-$t-11 /usr/local/bin/llvm-$t; fi
+            if [ -x /usr/bin/llvm-$t ]; then sudo ln -sf /usr/bin/llvm-$t /usr/local/bin/llvm-$t-11; fi
+          done
+          llvm-nm --version 2>/dev/null | head -1 || echo "llvm-nm MISSING"
           clang-11 --version | head -1
           ld.lld-11 --version | head -1
       - name: Fetch OPLUS vendor tree
