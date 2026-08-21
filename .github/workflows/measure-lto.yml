@@ -593,23 +593,29 @@ jobs:
           grep -E "^CONFIG_(LOCALVERSION|MACH_MT6833|MTK_UNIFY_POWER|KALLSYMS|SECURITY_SELINUX|ARM64_VA_BITS|DEBUG_INFO)" .config
       - name: Build vmlinux
         run: |
-          echo "=== DIAG: clang-11 stack-protector-strong test ==="
-          clang-11 --target=aarch64-linux-gnu -Qunused-arguments -Werror -fstack-protector-strong -c -x c /dev/null -o /tmp/stk.o && echo "SPP-OK" || echo "SPP-FAIL"
-          clang-11 --target=aarch64-linux-gnu -Qunused-arguments -fstack-protector-strong -c -x c /dev/null -o /tmp/stk2.o && echo "SPP-NOWERROR-OK" || echo "SPP-NOWERROR-FAIL"
-          clang-11 -v 2>&1 | grep -i "clang version" && echo "CCNAME=clang" || echo "CCNAME=gcc"
-          echo "=== DIAG2: dump KBUILD_CPPFLAGS/KBUILD_CFLAGS via include ==="
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          cat > /tmp/dump.mk << 'DUMPEOF'
-          include Makefile
-          .PHONY: dumpall
-          dumpall:
-          	@echo KBUILD_CPPFLAGS=[$(KBUILD_CPPFLAGS)]
-          	@echo KBUILD_CFLAGS=[$(KBUILD_CFLAGS)]
-          	@echo CC_OPTION_CFLAGS=[$(CC_OPTION_CFLAGS)]
-          DUMPEOF
-          CC="clang-11 --target=aarch64-linux-gnu -Qunused-arguments" make -s -f /tmp/dump.mk dumpall 2>&1 | head -5
           echo "--- tree check ---"
           ls -la kernel/sched/sched.h 2>&1 | head -2
+          # clang-11 已实证支持 -fstack-protector-strong，但 4.14 老 Makefile 的
+          # cc-option 探测机制与 clang 交叉编译不兼容 -> 精确去掉 stackp 强制检测块
+          python3 - << 'PYFIXSP'
+          p='Makefile'
+          s=open(p).read()
+          marker='# Make sure compiler supports requested stack protector flag.'
+          i=s.find(marker)
+          if i<0:
+              print('marker not found, skip')
+          else:
+              # 从 marker 到后续两个 endif(ifeq 的 endif + ifdef 的 endif) 整块删除
+              j=s.find('endif', i)
+              j=s.find('\n', j)  # 第一个 endif 行尾
+              k=s.find('endif', j)
+              k=s.find('\n', k)  # 第二个 endif 行尾
+              # 删除 [i, k+1) 范围，并去掉 marker 前的空行
+              n=s[:i].rstrip()+'\n'+s[k+1:]
+              open(p,'w').write(n)
+              print('stackp check block removed; removed chars=', len(s)-len(n))
+          PYFIXSP
+          grep -n "stack protector flag" Makefile && echo "STKP-CHECK STILL ON" || echo "STKP-CHECK REMOVED"
           # 关键修复双保险（Build 前最后一刻执行 + 诊断）
           sed -i 's/^inline void ksm_flock/extern void ksm_flock/' include/linux/keyslot-manager.h
           sed -i 's/^inline void ksm_flock/void ksm_flock/' block/keyslot-manager.c
