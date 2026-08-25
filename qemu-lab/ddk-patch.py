@@ -91,7 +91,7 @@ s = s.replace('''	val = readl(kbdev->reg + offset);
 		return val;
 	/* QEMU: reg MMIO does not exist in -M virt; unhandled reads must not
 	 * fall through to a real readl() (fault). Return 0. */
-	dev_dbg(kbdev->dev, "QEMU-FAKE reg r %08x (unhandled) -> 0\n", offset);
+	dev_dbg(kbdev->dev, "QEMU-FAKE reg r %08x (unhandled) -> 0\\n", offset);
 	return 0;
 #endif
 	val = readl(kbdev->reg + offset);
