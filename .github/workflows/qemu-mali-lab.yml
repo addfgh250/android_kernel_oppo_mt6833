@@ -31,18 +31,17 @@ jobs:
           mv linux-4.14.186 linux-m
           cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
           python3 - << 'PY'
+          import re
           s = open('linux-m/kernel/Makefile').read()
           assert 'qemu_marker' not in s
-          done = False
-          for anchor in ('obj-y     = fork.o exec_domain.o panic.o \\',
-                         'obj-y     += fork.o exec_domain.o panic.o',
-                         'obj-y		= fork.o exec_domain.o panic.o \\'):
-              if anchor in s:
-                  s = s.replace(anchor, anchor + ' qemu_marker.o', 1)
-                  done = True
-                  break
-          if not done:
-              raise SystemExit('kernel/Makefile anchor not found')
+          # Append to the END of the multi-line obj-y block. Appending after a
+          # trailing '\\' (line continuation) breaks the Makefile syntax
+          # ("recipe commences before first target" -> build fails silently).
+          pat = re.compile(r'obj-y\s+= fork\.o exec_domain\.o panic\.o \\\n(?:\s+[^\n]*\\\n)*\s+[^\n]*')
+          m = pat.search(s)
+          if not m:
+              raise SystemExit('kernel/Makefile anchor block not found')
+          s = s[:m.end()] + ' qemu_marker.o' + s[m.end():]
           open('linux-m/kernel/Makefile', 'w').write(s)
           PY
           grep -n "qemu_marker" linux-m/kernel/Makefile
@@ -59,7 +58,7 @@ jobs:
           scripts/config --enable CONFIG_MODULES --enable CONFIG_PROC_FS
           scripts/config --enable CONFIG_SHMEM --enable CONFIG_TMPFS
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image modules_prepare > kbuild.log 2>&1 || { echo "=== BUILD FAIL ==="; grep -E "error:|Error [0-9]" kbuild.log | head -40; exit 1; }
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image modules_prepare > kbuild.log 2>&1 || { echo "=== BUILD FAIL ==="; grep -E "\*\*\*|error:|Error [0-9]" kbuild.log | head -40; echo "--- kbuild.log tail ---"; tail -40 kbuild.log; exit 1; }
           echo "=== build OK ==="
           grep -E " qemu_marker" System.map || true
           ls -la arch/arm64/boot/Image
