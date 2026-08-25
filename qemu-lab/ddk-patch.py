@@ -133,6 +133,20 @@ sub(p, '''static const struct kbase_device_init dev_init[] = {
 p = os.path.join(MID, 'mali_kbase_core_linux.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
 sub(p, '#include "platform/mtk_platform_common.h"\n', '')
+s = read(p)
+s = s.replace('''	/* MTK */
+	/* make sure gpufreq driver is ready */
+	pr_info("%s start\\n", __func__);
+
+	if (mt_gpufreq_not_ready()) {
+		pr_info("gpufreq driver is not ready: %d\\n", -EPROBE_DEFER);
+		RETURN_ERROR(-EPROBE_DEFER);
+	}
+	/********/
+''', '''	/* QEMU-LAB: MTK gpufreq-ready check removed (no gpufreq driver in lab) */
+	pr_info("%s start\\n", __func__);
+''')
+write(p, s)
 sub(p, '''#ifdef CONFIG_PROC_FS
 		proc_mali_register();
 #endif /* CONFIG_PROC_FS */
