@@ -3,7 +3,10 @@
  *
  * Replaces the missing GPU hardware in QEMU virt:
  *  1. kbase_qemu_fake_reg_read(): answers key MMIO reads with a consistent
- *     Mali-G57 (TNAX, GPU_ID 0x90930000) configuration. READY registers are
+ *     Mali-G57 (TNAX, GPU_ID 0x90910000) configuration. READY registers are
+ *     0x90910000 = TNAX under a GENERIC 4.14 kernel (no CONFIG_MACH_MT6833,
+ *     so GPU_ID2_PRODUCT_TNAX = MODEL_MAKE(9,1) there; 0x90930000 would be
+ *     rejected as "Unknown GPU ID"). READY registers are
  *     faked equal to PRESENT so the PM state machine completes transitions
  *     synchronously (no GPU IRQs exist).
  *  2. kbase_qemu_fake_execute_atom(): software-executes job chains submitted
@@ -30,7 +33,7 @@
 
 /* ---------------- register fakes ---------------- */
 
-#define FAKE_GPU_ID 0x90930000u        /* TNAX: arch 9, product 3 (Mali-G57 MC2, MT6833) */
+#define FAKE_GPU_ID 0x90910000u        /* TNAX arch9 product1; generic 4.14 kernel */
 #define FAKE_SHADER_PRESENT_LO 0x3u
 #define FAKE_TILER_PRESENT_LO  0x1u
 #define FAKE_L2_PRESENT_LO     0x3u
