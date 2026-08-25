@@ -74,7 +74,9 @@ sub(p, '#include "platform/mtk_platform_common.h"\n', '')
 s = read(p)
 if 'kbase_qemu_fake_reg_read' not in s:
     s = s.replace('#include <backend/gpu/mali_kbase_device_internal.h>\n',
-                  '#include <backend/gpu/mali_kbase_device_internal.h>\n\n#ifdef QEMU_FAKE_JOBS\nextern bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val);\n#endif\n', 1)
+                  '#include <backend/gpu/mali_kbase_device_internal.h>\n\n#ifdef QEMU_FAKE_JOBS\nextern bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val);\nextern void kbase_qemu_fake_reg_write(struct kbase_device *kbdev, u32 offset, u32 value);\n#endif\n', 1)
+s = s.replace('''void kbase_reg_write(struct kbase_device *kbdev, u32 offset, u32 value)\n{\n\tKBASE_DEBUG_ASSERT(kbdev->pm.backend.gpu_powered);\n\tKBASE_DEBUG_ASSERT(kbdev->dev != NULL);\n\n\twritel(value, kbdev->reg + offset);\n''',
+              '''void kbase_reg_write(struct kbase_device *kbdev, u32 offset, u32 value)\n{\n\tKBASE_DEBUG_ASSERT(kbdev->pm.backend.gpu_powered);\n\tKBASE_DEBUG_ASSERT(kbdev->dev != NULL);\n\n#ifdef QEMU_FAKE_JOBS\n\tkbase_qemu_fake_reg_write(kbdev, offset, value);\n\treturn;\n#endif\n\twritel(value, kbdev->reg + offset);\n''')
 s = s.replace('''	if (mtk_kbase_gpu_debug_log()) /* Add by MTK to reduce useless log */
 		dev_dbg(kbdev->dev, "w: reg %08x val %08x", offset, value);''',
               '''	dev_dbg(kbdev->dev, "w: reg %08x val %08x", offset, value);''')
@@ -87,26 +89,8 @@ s = s.replace('''	val = readl(kbdev->reg + offset);
               '''#ifdef QEMU_FAKE_JOBS
 	if (kbase_qemu_fake_reg_read(kbdev, offset, &val))
 		return val;
-	/* QEMU: reg MMIO does not exist in -M virt; unhandled reads must not
-	 * fall through to readl() (fault). Return 0. */
-	dev_dbg(kbdev->dev, "QEMU-FAKE reg r %08x (unhandled) -> 0\n", offset);
-	return 0;
 #endif
 	val = readl(kbdev->reg + offset);
-
-#ifdef CONFIG_DEBUG_FS''')
-write(p, s)
-
-# reg_write: NOP under QEMU -- the virtual-PGA MMIO does not exist in -M virt.
-s = read(p)
-s = s.replace('''\twritel(value, kbdev->reg + offset);
-
-#ifdef CONFIG_DEBUG_FS''',
-              '''#ifdef QEMU_FAKE_JOBS
-\tdev_dbg(kbdev->dev, \"QEMU-FAKE reg w %08x <- %08x (nop)\\n\", offset, value);
-\treturn;
-#endif
-\twritel(value, kbdev->reg + offset);
 
 #ifdef CONFIG_DEBUG_FS''')
 write(p, s)
