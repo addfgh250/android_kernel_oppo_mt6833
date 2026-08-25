@@ -12,6 +12,9 @@ def main():
     dtb_in, dtb_out = sys.argv[1], sys.argv[2]
     dts = run('dtc -I dtb -O dts %s' % dtb_in)
 
+    # QEMU virt machine (this kernel generation) has a FLAT root layout:
+    # all devices hang directly off "/", there is no /soc container node.
+    # Robust anchor = the root node itself; insert mali as its first child.
     mali_node = '''\t\tmali: mali@e000000 {
 \t\t\tcompatible = "arm,mali-valhall";
 \t\t\treg = <0x0 0x0e000000 0x0 0x10000>;
@@ -22,15 +25,18 @@ def main():
     if 'mali@e000000' in dts:
         print('mali node already present')
     else:
-        # insert at the end of the /soc node: find the soc node opening
-        # (any indentation) and insert the mali node right after its first line.
-        m = re.search(r'^[ \t]*soc \{[^\n]*\n', dts, re.M)
+        # Insert AFTER the root node's properties (which must precede all
+        # subnodes per dtc) and BEFORE its first child. Anchor = the first
+        # top-level child node line (a tab-indented "name {" at col 1..n).
+        m = re.search(r'^\t[a-zA-Z_][a-zA-Z0-9_,@-]* \{[^\n]*\n', dts, re.M)
         if not m:
-            sys.exit('soc node not found in dts')
-        dts = dts[:m.end()] + mali_node + dts[m.end():]
+            sys.exit('no top-level child node found in dts')
+        # re-indent the mali node block for a root child (replace 2-tab lead)
+        mali_root = mali_node.replace('\t\t', '\t', 1)
+        dts = dts[:m.start()] + mali_root + dts[m.start():]
         with open('virt-mali.dts', 'w') as f:
             f.write(dts)
-        print('mali node inserted into virt-mali.dts')
+        print('mali node inserted into virt-mali.dts (root child)')
 
     run('dtc -I dts -O dtb virt-mali.dts -o %s' % dtb_out)
     print('wrote', dtb_out)
