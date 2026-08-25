@@ -195,6 +195,13 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 {
 	phys_addr_t pgd = kctx->mmu.pgd;
 	int level;
+	{
+		struct page *pp = pfn_to_page(PFN_DOWN(pgd));
+		u64 *raw = (u64 *)kmap_atomic(pp);
+		pr_info("QEMU-FAKE-DBG pgd=phys %llx raw[0..3]=%llx %llx %llx %llx\n",
+			(unsigned long long)pgd, raw[0], raw[1], raw[2], raw[3]);
+		kunmap_atomic(raw);
+	}
 
 	for (level = MIDGARD_MMU_TOPLEVEL; level <= MIDGARD_MMU_BOTTOMLEVEL; level++) {
 		u64 idx = (va >> (12 + (3 - level) * 9)) & 0x1FF;
