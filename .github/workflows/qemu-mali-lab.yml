@@ -31,6 +31,16 @@ jobs:
           mv linux-4.14.186 linux-m
           cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
           cp qemu-lab/vendor/trace-events-gpu.h linux-m/include/trace/events/gpu.h
+          # MTK PG_iommu page-flag API stub: r25p0 DDK calls SetPageIommu;
+          # generic 4.14 has no such flag. No-op is correct for QEMU lab.
+          cat >> linux-m/include/linux/page-flags.h <<'EOF'
+          /* QEMU Mali lab: MTK PG_iommu page-flag API stub (no-op) */
+          #define SetPageIommu(page)    do { } while (0)
+          #define ClearPageIommu(page)  do { } while (0)
+          #define PageIommu(page)       (0)
+          #define __SetPageIommu(page)  do { } while (0)
+          #define __ClearPageIommu(page) do { } while (0)
+          EOF
           python3 - << 'PY'
           import re
           s = open('linux-m/kernel/Makefile').read()
