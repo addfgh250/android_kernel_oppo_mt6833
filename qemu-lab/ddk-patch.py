@@ -181,7 +181,12 @@ s = s.replace('''	/* MTK add for gpu_freq information */
 ''', '')
 write(p, s)
 
-# mali_kbase_vinstr.c: stub the MTK perf-counter header
+# mali_kbase_vinstr.c: stub the MTK perf-counter header.
+# NOTE: the file itself DEFINES MTK_update_gpu_LTR / MTK_kbasep_vinstr_hwcnt_set_interval /
+# MTK_reset_urate / MTK_update_gpu_swpm, so macro stubs here would clobber those
+# definitions ("macro passed N arguments" / "expected identifier before do").
+# Use prototypes instead, and empty the MTK_update_gpu_LTR body (the only
+# MTK-dependent body not guarded by CONFIG_MTK_SWPM).
 p = os.path.join(MID, 'mali_kbase_vinstr.c')
 sub(p, '#include <platform/mtk_mfg_counter.h>\n',
        '''/* QEMU-LAB: mtk_mfg_counter.h stubbed out */
@@ -189,12 +194,16 @@ sub(p, '#include <platform/mtk_mfg_counter.h>\n',
 #define pm_ltr 1
 #define pm_swpm 2
 #define VINSTR_PERF_COUNTER_LAST 64
-#define MTK_update_gpu_LTR() do {} while (0)
-#define MTK_update_gpu_swpm() do {} while (0)
-#define MTK_reset_urate() do {} while (0)
-#define MTK_kbasep_vinstr_hwcnt_set_interval(x) do {} while (0)
+void MTK_kbasep_vinstr_hwcnt_set_interval(unsigned int interval);
+void MTK_kbasep_vinstr_hwcnt_release(void);
+void MTK_reset_urate(void);
+void MTK_update_gpu_swpm(void);
+void MTK_update_gpu_LTR(void);
 ''')
 s = read(p)
+s = re.sub(r'void MTK_update_gpu_LTR\(void\)\n\{.*$',
+           'void MTK_update_gpu_LTR(void)\n{\n\t/* QEMU-LAB: MTK perf-counter body stubbed out */\n}\n',
+           s, flags=re.S)
 s = s.replace('''		if (mtk_pm_tool != pm_non) {
 			MTK_kbasep_vinstr_hwcnt_set_interval(0);
 			ds5_used = 1;
