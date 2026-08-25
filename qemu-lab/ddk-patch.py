@@ -87,8 +87,26 @@ s = s.replace('''	val = readl(kbdev->reg + offset);
               '''#ifdef QEMU_FAKE_JOBS
 	if (kbase_qemu_fake_reg_read(kbdev, offset, &val))
 		return val;
+	/* QEMU: reg MMIO does not exist in -M virt; unhandled reads must not
+	 * fall through to readl() (fault). Return 0. */
+	dev_dbg(kbdev->dev, "QEMU-FAKE reg r %08x (unhandled) -> 0\n", offset);
+	return 0;
 #endif
 	val = readl(kbdev->reg + offset);
+
+#ifdef CONFIG_DEBUG_FS''')
+write(p, s)
+
+# reg_write: NOP under QEMU -- the virtual-PGA MMIO does not exist in -M virt.
+s = read(p)
+s = s.replace('''\twritel(value, kbdev->reg + offset);
+
+#ifdef CONFIG_DEBUG_FS''',
+              '''#ifdef QEMU_FAKE_JOBS
+\tdev_dbg(kbdev->dev, \"QEMU-FAKE reg w %08x <- %08x (nop)\\n\", offset, value);
+\treturn;
+#endif
+\twritel(value, kbdev->reg + offset);
 
 #ifdef CONFIG_DEBUG_FS''')
 write(p, s)
