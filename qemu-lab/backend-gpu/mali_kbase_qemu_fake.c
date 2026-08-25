@@ -207,6 +207,9 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 		entry = tab[idx];
 		kunmap_atomic(tab);
 
+		pr_info("QEMU-FAKE-DBG walk va=%llx lvl=%d idx=%llu pgd=%llx entry=%llx\n",
+			va, level, idx, (unsigned long long)pgd, entry);
+
 		if (level == MIDGARD_MMU_BOTTOMLEVEL) {
 			/* bottom level: flag 3 = 4KB page */
 			if ((entry & 3) != 3) {
