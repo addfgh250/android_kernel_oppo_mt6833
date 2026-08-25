@@ -3,10 +3,7 @@
  *
  * Replaces the missing GPU hardware in QEMU virt:
  *  1. kbase_qemu_fake_reg_read(): answers key MMIO reads with a consistent
- *     Mali-G57 (TNAX, GPU_ID 0x90910000) configuration. READY registers are
- *     0x90910000 = TNAX under a GENERIC 4.14 kernel (no CONFIG_MACH_MT6833,
- *     so GPU_ID2_PRODUCT_TNAX = MODEL_MAKE(9,1) there; 0x90930000 would be
- *     rejected as "Unknown GPU ID"). READY registers are
+ *     Mali-G57 (TNAX, GPU_ID 0x90930000) configuration. READY registers are
  *     faked equal to PRESENT so the PM state machine completes transitions
  *     synchronously (no GPU IRQs exist).
  *  2. kbase_qemu_fake_execute_atom(): software-executes job chains submitted
@@ -33,7 +30,7 @@
 
 /* ---------------- register fakes ---------------- */
 
-#define FAKE_GPU_ID 0x90910000u        /* TNAX arch9 product1; generic 4.14 kernel */
+#define FAKE_GPU_ID 0x90930000u        /* TNAX: arch 9, product 3 (Mali-G57 MC2, MT6833) */
 #define FAKE_SHADER_PRESENT_LO 0x3u
 #define FAKE_TILER_PRESENT_LO  0x1u
 #define FAKE_L2_PRESENT_LO     0x3u
@@ -66,7 +63,7 @@ bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val)
 		v = 0x000000FFu;
 		break;
 	case GPU_CONTROL_REG(JS_PRESENT):
-		v = 0x00000001u;             /* 1 job slot */
+		v = 0x00000007u;             /* 3 job slots (kbase_js_get_slot hardcodes slot 1 for CS atoms) */
 		break;
 	case GPU_CONTROL_REG(COHERENCY_FEATURES):
 		v = 0x00000001u;             /* ACE_LITE */
@@ -118,11 +115,6 @@ bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val)
 		break;
 	case GPU_CONTROL_REG(GPU_STATUS):
 		v = 0;
-		break;
-	case GPU_CONTROL_REG(GPU_IRQ_RAWSTAT):
-		/* Report RESET_COMPLETED immediately so soft/hard reset polling
-		 * succeeds in probe (no real GPU/IRQ controller in QEMU). */
-		v = RESET_COMPLETED;
 		break;
 	default:
 		if (offset >= GPU_CONTROL_REG(JS0_FEATURES) &&
@@ -270,19 +262,7 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 
 void kbase_qemu_fake_reg_write(struct kbase_device *kbdev, u32 offset, u32 value)
 {
-	/* No real GPU MMIO: swallow the write, but treat a GPU_COMMAND write
-	 * (SOFT/HARD RESET) as a completed reset so probe's
-	 * kbase_pm_wait_for_reset() wakes immediately instead of timing out
-	 * and hitting the "Reset interrupt didn't reach CPU" error path. */
-	if (offset == GPU_CONTROL_REG(GPU_COMMAND)) {
-		if (value == GPU_COMMAND_SOFT_RESET ||
-		    value == GPU_COMMAND_HARD_RESET) {
-			dev_dbg(kbdev->dev, "QEMU-FAKE reset cmd %08x -> reset_done\n",
-				value);
-			kbase_pm_reset_done(kbdev);
-			return;
-		}
-	}
+	/* No real GPU MMIO: swallow the write. */
 	dev_dbg(kbdev->dev, "QEMU-FAKE reg w %08x <- %08x\n", offset, value);
 }
 
