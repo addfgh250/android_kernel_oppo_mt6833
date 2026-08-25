@@ -235,4 +235,20 @@ s = s.replace('''		if (mtk_pm_tool != pm_non) {
 ''')
 write(p, s)
 
+# QEMU: no WA microcode blob present; never load it. The fake backend
+# software-executes jobs, so the TTRX_3485 dummy-job workaround is unneeded.
+p = os.path.join(MID, 'mali_kbase_dummy_job_wa.c')
+s = read(p)
+if 'QEMU-LAB no-wa-blob' not in s:
+    s = re.sub(r'static bool wa_blob_load_needed\(struct kbase_device \*kbdev\)\n\{.*?\n\}',
+               '''static bool wa_blob_load_needed(struct kbase_device *kbdev)
+{
+	/* QEMU-LAB no-wa-blob: probe must succeed without the WA microcode
+	 * file (it is not shipped in the QEMU initramfs). */
+	(void)kbdev;
+	return false;
+}''',
+               s, count=1, flags=re.S)
+    write(p, s)
+
 print('DDK MTK-decouple + fake-hw patch done')
