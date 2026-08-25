@@ -34,9 +34,9 @@ jobs:
           s = open('linux-m/kernel/Makefile').read()
           assert 'qemu_marker' not in s
           done = False
-          for anchor in ('obj-y     += fork.o exec_domain.o panic.o',
-                         'obj-y\t\t+= fork.o exec_domain.o panic.o',
-                         'obj-y		+= fork.o exec_domain.o panic.o'):
+          for anchor in ('obj-y     = fork.o exec_domain.o panic.o \\',
+                         'obj-y     += fork.o exec_domain.o panic.o',
+                         'obj-y		= fork.o exec_domain.o panic.o \\'):
               if anchor in s:
                   s = s.replace(anchor, anchor + ' qemu_marker.o', 1)
                   done = True
