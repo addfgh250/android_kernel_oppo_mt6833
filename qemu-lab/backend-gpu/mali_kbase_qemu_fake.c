@@ -218,8 +218,9 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 			va, level, idx, (unsigned long long)pgd, entry);
 
 		if (level == MIDGARD_MMU_BOTTOMLEVEL) {
-			/* bottom level: flag 3 = 4KB page */
-			if ((entry & 3) != 3) {
+			/* bottom level: LPAE leaf ATE = type 1 (this lab runs the
+			 * LPAE MMU mode: 3=table, 1=leaf, 2=inval) */
+			if ((entry & 3) != 1) {
 				dev_warn(kctx->kbdev->dev,
 					"QEMU-FAKE mmu fault va=%llx lvl=%d entry=%llx\n",
 					va, level, entry);
@@ -247,13 +248,13 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 			return 0;
 		}
 
-		if ((entry & 3) == 1) {
-			/* table: descend */
+		if ((entry & 3) == 3) {
+			/* LPAE table: descend */
 			pgd = entry & ~0xFFFULL;
 			continue;
 		}
-		if ((entry & 3) == 3) {
-			/* block entry at level>bottom: (entry&~0xFFF) + va offset below level */
+		if ((entry & 3) == 1) {
+			/* LPAE leaf (block entry at level>bottom) */
 			phys_addr_t phys = (entry & ~0xFFFULL) +
 				(va & ((1ULL << (12 + (3 - level) * 9)) - 1));
 			u8 *dst = (u8 *)phys_to_virt(phys);
