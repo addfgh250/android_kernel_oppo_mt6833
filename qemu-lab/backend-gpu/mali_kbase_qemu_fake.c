@@ -119,6 +119,11 @@ bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val)
 	case GPU_CONTROL_REG(GPU_STATUS):
 		v = 0;
 		break;
+	case GPU_CONTROL_REG(GPU_IRQ_RAWSTAT):
+		/* Report RESET_COMPLETED immediately so soft/hard reset polling
+		 * succeeds in probe (no real GPU/IRQ controller in QEMU). */
+		v = RESET_COMPLETED;
+		break;
 	default:
 		if (offset >= GPU_CONTROL_REG(JS0_FEATURES) &&
 		    offset < GPU_CONTROL_REG(JS0_FEATURES) + 16 * 4) {
