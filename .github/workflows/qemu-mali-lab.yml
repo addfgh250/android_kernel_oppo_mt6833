@@ -1,0 +1,132 @@
+name: qemu-mali-lab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  qemu-mali:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout (sparse: DDK + lab scripts)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            qemu-lab
+            drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0
+          sparse-checkout-cone-mode: false
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu qemu-system-aarch64 device-tree-compiler cpio
+
+      - name: Fetch generic kernel + add marker
+        run: |
+          curl -sL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz -o k.tar.xz
+          tar xJf k.tar.xz
+          mv linux-4.14.186 linux-m
+          cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
+          python3 - << 'PY'
+          s = open('linux-m/kernel/Makefile').read()
+          assert 'qemu_marker' not in s
+          done = False
+          for anchor in ('obj-y     += fork.o exec_domain.o panic.o',
+                         'obj-y\t\t+= fork.o exec_domain.o panic.o',
+                         'obj-y		+= fork.o exec_domain.o panic.o'):
+              if anchor in s:
+                  s = s.replace(anchor, anchor + ' qemu_marker.o', 1)
+                  done = True
+                  break
+          if not done:
+              raise SystemExit('kernel/Makefile anchor not found')
+          open('linux-m/kernel/Makefile', 'w').write(s)
+          PY
+          grep -n "qemu_marker" linux-m/kernel/Makefile
+
+      - name: Configure + build kernel
+        run: |
+          cd linux-m
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config --enable CONFIG_ARM64_VA_BITS_39 --disable CONFIG_ARM64_VA_BITS_48
+          scripts/config --enable CONFIG_KALLSYMS --enable CONFIG_KALLSYMS_ALL
+          scripts/config --enable CONFIG_DEVTMPFS --enable CONFIG_BLK_DEV_INITRD
+          scripts/config --enable CONFIG_DMA_SHARED_BUFFER --enable CONFIG_DEBUG_FS
+          scripts/config --disable CONFIG_DEVFREQ
+          scripts/config --enable CONFIG_MODULES --enable CONFIG_PROC_FS
+          scripts/config --enable CONFIG_SHMEM --enable CONFIG_TMPFS
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image modules_prepare > kbuild.log 2>&1 || { echo "=== BUILD FAIL ==="; grep -E "error:|Error [0-9]" kbuild.log | head -40; exit 1; }
+          echo "=== build OK ==="
+          grep -E " qemu_marker" System.map || true
+          ls -la arch/arm64/boot/Image
+          grep -E "CONFIG_ARM64_VA_BITS_39=|CONFIG_ARM64_VA_BITS_48=|CONFIG_RANDOMIZE_BASE=|CONFIG_KALLSYMS_ALL=" .config
+
+      - name: Patch + build DDK modules
+        run: |
+          python3 qemu-lab/ddk-patch.py
+          cp qemu-lab/backend-gpu/mali_kbase_qemu_fake.c \
+             drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers/gpu/arm/midgard/backend/gpu/
+          DDK=$(pwd)/drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers
+          KDIR=$(pwd)/linux-m
+          LOGD=$DDK/..
+          MCI="-I$DDK/gpu/arm/midgard/include"
+          (cd $DDK/base/memory_group_manager && \
+             make -C $KDIR M=$(pwd) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                  EXTRA_CFLAGS="$MCI" CONFIG_MALI_MEMORY_GROUP_MANAGER=m modules \
+                  > $LOGD/build-mgm.log 2>&1) || { echo "=== MGM FAIL ==="; grep -E "error:|Error [0-9]" $LOGD/build-mgm.log | head -30; exit 1; }
+          (cd $DDK/base/protected_memory_allocator && \
+             make -C $KDIR M=$(pwd) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                  EXTRA_CFLAGS="$MCI" CONFIG_MALI_PROTECTED_MEMORY_ALLOCATOR=m modules \
+                  > $LOGD/build-pma.log 2>&1) || { echo "=== PMA FAIL ==="; grep -E "error:|Error [0-9]" $LOGD/build-pma.log | head -30; exit 1; }
+          (cd $DDK/gpu/arm/midgard && \
+             make -C $KDIR M=$(pwd) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                  CONFIG_MALI_MIDGARD=m modules \
+                  > $LOGD/build-kbase.log 2>&1) || { echo "=== KBASE FAIL ==="; grep -E "error:|Error [0-9]|undefined" $LOGD/build-kbase.log | head -60; exit 1; }
+          echo "=== DDK build OK ==="
+          ls -la $DDK/base/memory_group_manager/*.ko $DDK/base/protected_memory_allocator/*.ko $DDK/gpu/arm/midgard/*.ko
+          tail -5 $LOGD/build-kbase.log
+
+      - name: Build userspace + initramfs
+        run: |
+          mkdir -p ramfs/proc ramfs/dev ramfs/sys
+          aarch64-linux-gnu-gcc -static -O2 -Wall qemu-lab/exploit/qemu-exploit.c -o ramfs/exploit || exit 1
+          aarch64-linux-gnu-gcc -static -O2 -Wall qemu-lab/init/init.c -o ramfs/init || exit 1
+          DDK=drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers
+          cp $DDK/base/memory_group_manager/memory_group_manager.ko ramfs/
+          cp $DDK/base/protected_memory_allocator/protected_memory_allocator.ko ramfs/
+          cp $DDK/gpu/arm/midgard/mali_kbase.ko ramfs/
+          (cd ramfs && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz)
+          ls -la initramfs.cpio.gz
+
+      - name: DTB with mali node
+        run: |
+          qemu-system-aarch64 -machine virt,dumpdtb=virt.dtb -cpu cortex-a57 -m 2048 -nographic > /dev/null 2>&1 || true
+          ls -la virt.dtb
+          python3 qemu-lab/dtb-patch.py virt.dtb virt-mali.dtb
+          dtc -I dtb -O dts virt-mali.dtb | grep -B1 -A7 "mali@e000000" | head -12
+
+      - name: Run QEMU lab
+        timeout-minutes: 8
+        run: |
+          timeout 420 qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1536M -smp 4 \
+            -nographic -no-reboot \
+            -kernel linux-m/arch/arm64/boot/Image \
+            -initrd initramfs.cpio.gz \
+            -dtb virt-mali.dtb \
+            -append "console=ttyAMA0 nokaslr kptr_restrict=0 rdinit=/init" > qemu.log 2>&1 || true
+          echo "=== console (lab lines) ==="
+          grep -E "===|init:|VERIFY|Found|kallsyms|phys\(|readback|overwrite_addr|MARKER|QEMU-FAKE|kbase|mali|BUG|panic|KMSG|jit_" qemu.log | head -250
+          echo "=== console tail ==="
+          tail -30 qemu.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-mali-lab-artifacts
+          path: |
+            qemu.log
+            linux-m/kbuild.log
+            drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/build-*.log
+            virt-mali.dts
