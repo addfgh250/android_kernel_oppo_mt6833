@@ -200,6 +200,9 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 		u64 *raw = (u64 *)kmap_atomic(pp);
 		pr_info("QEMU-FAKE-DBG pgd=phys %llx raw[0..3]=%llx %llx %llx %llx\n",
 			(unsigned long long)pgd, raw[0], raw[1], raw[2], raw[3]);
+		pr_info("QEMU-FAKE-DBG mmu_mode=%s\n",
+			kctx->kbdev->mmu_mode == kbase_mmu_mode_get_aarch64() ?
+			"aarch64" : "lpae");
 		kunmap_atomic(raw);
 	}
 
@@ -228,7 +231,10 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 				return -EFAULT;
 			}
 			{
-				phys_addr_t phys = (entry & ~0xFFFULL) | (va & 0xFFF);
+				/* bit 22 (0x400000) appears in real leaf ATEs on this
+				 * platform (origin unknown, not in either mode's flag
+				 * set) — mask it out of the phys. */
+				phys_addr_t phys = ((entry & ~0xFFFULL) & ~(1ULL << 22)) | (va & 0xFFF);
 				u8 *dst;
 				if (!pfn_valid(PFN_DOWN(phys))) {
 					dev_warn(kctx->kbdev->dev,
