@@ -47,6 +47,9 @@ bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val)
 	case GPU_CONTROL_REG(L2_FEATURES):
 		v = 0x00140006u;             /* line=64B, cache=1MB */
 		break;
+	case GPU_CONTROL_REG(CORE_FEATURES):
+		v = 0x00000002u;             /* 2 exec engines */
+		break;
 	case GPU_CONTROL_REG(TILER_FEATURES):
 		v = 0x00000306u;             /* bin=64B, 3 levels */
 		break;
@@ -132,7 +135,8 @@ bool kbase_qemu_fake_reg_read(struct kbase_device *kbdev, u32 offset, u32 *val)
 			v = 0;               /* 0 => driver defaults */
 			break;
 		}
-		handled = false;
+		/* any other offset: return 0 instead of touching real MMIO
+		 * (QEMU has no Mali MMIO; readl would external-abort) */
 		v = 0;
 		break;
 	}
@@ -254,6 +258,12 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 		return -EFAULT;
 	}
 	return -EFAULT;
+}
+
+void kbase_qemu_fake_reg_write(struct kbase_device *kbdev, u32 offset, u32 value)
+{
+	/* No real GPU MMIO: swallow the write. */
+	dev_dbg(kbdev->dev, "QEMU-FAKE reg w %08x <- %08x\n", offset, value);
 }
 
 /* ---------------- job chain execution ----------------------------------- */
