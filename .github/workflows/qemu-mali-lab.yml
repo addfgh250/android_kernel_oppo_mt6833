@@ -30,6 +30,7 @@ jobs:
           tar xJf k.tar.xz
           mv linux-4.14.186 linux-m
           cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
+          cp qemu-lab/vendor/trace-events-gpu.h linux-m/include/trace/events/gpu.h
           python3 - << 'PY'
           import re
           s = open('linux-m/kernel/Makefile').read()
