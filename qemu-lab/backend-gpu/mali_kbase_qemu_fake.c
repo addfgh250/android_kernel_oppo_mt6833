@@ -270,7 +270,19 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 
 void kbase_qemu_fake_reg_write(struct kbase_device *kbdev, u32 offset, u32 value)
 {
-	/* No real GPU MMIO: swallow the write. */
+	/* No real GPU MMIO: swallow the write, but treat a GPU_COMMAND write
+	 * (SOFT/HARD RESET) as a completed reset so probe's
+	 * kbase_pm_wait_for_reset() wakes immediately instead of timing out
+	 * and hitting the "Reset interrupt didn't reach CPU" error path. */
+	if (offset == GPU_CONTROL_REG(GPU_COMMAND)) {
+		if (value == GPU_COMMAND_SOFT_RESET ||
+		    value == GPU_COMMAND_HARD_RESET) {
+			dev_dbg(kbdev->dev, "QEMU-FAKE reset cmd %08x -> reset_done\n",
+				value);
+			kbase_pm_reset_done(kbdev);
+			return;
+		}
+	}
 	dev_dbg(kbdev->dev, "QEMU-FAKE reg w %08x <- %08x\n", offset, value);
 }
 
