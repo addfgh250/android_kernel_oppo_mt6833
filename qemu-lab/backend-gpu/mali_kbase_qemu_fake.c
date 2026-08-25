@@ -271,7 +271,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 	u64 jc = katom->jc;
 	int i;
 
-	dev_dbg(kbdev, "QEMU-FAKE exec atom %p js=%d jc=%llx kctx=%p\n",
+	dev_dbg(kbdev->dev, "QEMU-FAKE exec atom %p js=%d jc=%llx kctx=%p\n",
 		(void *)katom, js, jc, (void *)kctx);
 
 	for (i = 0; i < 16 && jc; i++) {
@@ -280,7 +280,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 		u64 next, addr, val;
 
 		if (qemu_fake_read_region(kctx, jc, hdr, sizeof(hdr))) {
-			dev_warn(kbdev, "QEMU-FAKE job chain read failed jc=%llx\n", jc);
+			dev_warn(kbdev->dev, "QEMU-FAKE job chain read failed jc=%llx\n", jc);
 			break;
 		}
 		type = (hdr[4] >> 1) & 0x7F;
@@ -289,7 +289,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 		if (type == MALI_JOB_TYPE_WRITE_VALUE) {
 			if (qemu_fake_read_region(kctx, jc + 32, payload,
 						  sizeof(payload))) {
-				dev_warn(kbdev, "QEMU-FAKE payload read failed\n");
+				dev_warn(kbdev->dev, "QEMU-FAKE payload read failed\n");
 				break;
 			}
 			addr = ((u64)payload[1] << 32) | payload[0];
@@ -299,7 +299,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 			    wtype <= MALI_WRITE_VALUE_TYPE_IMMEDIATE_64) {
 				qemu_fake_mmu_write(kctx, addr, val, wtype);
 			} else {
-				dev_dbg(kbdev, "QEMU-FAKE non-immediate write-value (type %u) skipped\n",
+				dev_dbg(kbdev->dev, "QEMU-FAKE non-immediate write-value (type %u) skipped\n",
 					wtype);
 			}
 		}
