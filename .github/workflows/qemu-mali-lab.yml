@@ -1,6 +1,9 @@
 name: qemu-mali-lab
 
 on:
+  push:
+    branches:
+      - qemu-mali-ci
   workflow_dispatch:
 
 jobs:
