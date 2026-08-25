@@ -89,10 +89,6 @@ s = s.replace('''	val = readl(kbdev->reg + offset);
               '''#ifdef QEMU_FAKE_JOBS
 	if (kbase_qemu_fake_reg_read(kbdev, offset, &val))
 		return val;
-	/* QEMU: reg MMIO does not exist in -M virt; unhandled reads must not
-	 * fall through to a real readl() (fault). Return 0. */
-	dev_dbg(kbdev->dev, "QEMU-FAKE reg r %08x (unhandled) -> 0\\n", offset);
-	return 0;
 #endif
 	val = readl(kbdev->reg + offset);
 
@@ -191,6 +187,33 @@ if 'mt_gpufreq' in s:
     sys.exit('FAIL: js_backend.c still references mt_gpufreq')
 write(p, s)
 
+# QEMU-LAB instrumentation: dump JS pullable-list state before the list ops
+# (crash forensics for the first CS atom submit; prints to qemu.log console)
+p = os.path.join(MID, 'mali_kbase_js.c')
+s = read(p)
+if 'QEMU-FAKE-DBG pullable' not in s:
+    s = s.replace('''	if (!list_empty(&kctx->jctx.sched_info.ctx.ctx_list_entry[js]))
+		list_del_init(&kctx->jctx.sched_info.ctx.ctx_list_entry[js]);
+
+	list_add_tail(&kctx->jctx.sched_info.ctx.ctx_list_entry[js],
+			&kbdev->js_data.ctx_list_pullable[js][kctx->priority]);
+''', '''	pr_info("QEMU-FAKE-DBG pullable-add: kctx=%lx js=%d prio=%d entry=%lx e.next=%lx e.prev=%lx head=%lx h.next=%lx h.prev=%lx\\n",
+		(unsigned long)kctx, js, (int)kctx->priority,
+		(unsigned long)&kctx->jctx.sched_info.ctx.ctx_list_entry[js],
+		(unsigned long)kctx->jctx.sched_info.ctx.ctx_list_entry[js].next,
+		(unsigned long)kctx->jctx.sched_info.ctx.ctx_list_entry[js].prev,
+		(unsigned long)&kbdev->js_data.ctx_list_pullable[js][kctx->priority],
+		(unsigned long)kbdev->js_data.ctx_list_pullable[js][kctx->priority].next,
+		(unsigned long)kbdev->js_data.ctx_list_pullable[js][kctx->priority].prev);
+
+	if (!list_empty(&kctx->jctx.sched_info.ctx.ctx_list_entry[js]))
+		list_del_init(&kctx->jctx.sched_info.ctx.ctx_list_entry[js]);
+
+	list_add_tail(&kctx->jctx.sched_info.ctx.ctx_list_entry[js],
+			&kbdev->js_data.ctx_list_pullable[js][kctx->priority]);
+''')
+    write(p, s)
+
 # mmu/backend/mali_kbase_mmu_jm.c
 p = os.path.join(MID, 'mmu', 'backend', 'mali_kbase_mmu_jm.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
@@ -234,21 +257,5 @@ s = s.replace('''		if (mtk_pm_tool != pm_non) {
 		}
 ''')
 write(p, s)
-
-# QEMU: no WA microcode blob present; never load it. The fake backend
-# software-executes jobs, so the TTRX_3485 dummy-job workaround is unneeded.
-p = os.path.join(MID, 'mali_kbase_dummy_job_wa.c')
-s = read(p)
-if 'QEMU-LAB no-wa-blob' not in s:
-    s = re.sub(r'static bool wa_blob_load_needed\(struct kbase_device \*kbdev\)\n\{.*?\n\}',
-               '''static bool wa_blob_load_needed(struct kbase_device *kbdev)
-{
-	/* QEMU-LAB no-wa-blob: probe must succeed without the WA microcode
-	 * file (it is not shipped in the QEMU initramfs). */
-	(void)kbdev;
-	return false;
-}''',
-               s, count=1, flags=re.S)
-    write(p, s)
 
 print('DDK MTK-decouple + fake-hw patch done')
