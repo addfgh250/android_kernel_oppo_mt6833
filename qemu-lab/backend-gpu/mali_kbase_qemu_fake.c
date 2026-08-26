@@ -320,7 +320,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 	u64 jc = katom->jc;
 	int i;
 
-	dev_dbg(kbdev->dev, "QEMU-FAKE exec atom %p js=%d jc=%llx kctx=%p\n",
+	pr_info("QEMU-FAKE-DBG exec atom %p js=%d jc=%llx kctx=%p\n",
 		(void *)katom, js, jc, (void *)kctx);
 
 	for (i = 0; i < 16 && jc; i++) {
@@ -334,6 +334,8 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 		}
 		type = (hdr[4] >> 1) & 0x7F;
 		next = ((u64)hdr[7] << 32) | hdr[6];
+		pr_info("QEMU-FAKE-DBG job i=%d jc=%llx type=%u next=%llx\n",
+			i, (unsigned long long)jc, type, (unsigned long long)next);
 
 		if (type == MALI_JOB_TYPE_WRITE_VALUE) {
 			if (qemu_fake_read_region(kctx, jc + 32, payload,
@@ -375,8 +377,13 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 	if (js < kbdev->gpu_props.num_job_slots &&
 	    kbase_gpu_inspect(kbdev, js, 0)) {
 		ktime_t ts = ktime_get();
+		pr_info("QEMU-FAKE-DBG worker js=%d -> complete+kick\n", js);
 		kbase_gpu_complete_hw(kbdev, js, BASE_JD_EVENT_DONE, 0, &ts);
 		kbase_jm_try_kick_all(kbdev);
+	} else {
+		pr_info("QEMU-FAKE-DBG worker js=%d inspect=%d numslots=%d SKIP\n",
+			js, kbase_gpu_inspect(kbdev, js, 0),
+			kbdev->gpu_props.num_job_slots);
 	}
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 	qemu_fake_pending_js = -1;
@@ -391,6 +398,7 @@ void kbase_qemu_fake_complete_async(struct kbase_device *kbdev, int js)
 		INIT_WORK(&qemu_fake_complete_work, qemu_fake_complete_worker);
 		work_ready = true;
 	}
+	pr_info("QEMU-FAKE-DBG complete_async js=%d\n", js);
 	WRITE_ONCE(qemu_fake_pending_js, js);
 	schedule_work(&qemu_fake_complete_work);
 }
