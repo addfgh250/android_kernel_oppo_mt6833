@@ -46,6 +46,8 @@ int main(void)
 	syscall(SYS_mount, "proc", "/proc", "proc", 0, 0);
 	syscall(SYS_mount, "devtmpfs", "/dev", "devtmpfs", 0, 0);
 	syscall(SYS_mount, "sysfs", "/sys", "sysfs", 0, 0);
+	mkdir("/sys/kernel/debug", 0555);
+	syscall(SYS_mount, "debugfs", "/sys/kernel/debug", "debugfs", 0, 0);
 
 	printf("=== QEMU mali 38181 lab: init up ===\n");
 
