@@ -362,7 +362,7 @@ void kbase_qemu_fake_execute_atom(struct kbase_device *kbdev,
 
 static struct kbase_device *qemu_fake_kbdev;
 static int qemu_fake_pending_js = -1;
-static struct work_struct qemu_fake_complete_work;
+static struct delayed_work qemu_fake_complete_work;
 
 static void qemu_fake_complete_worker(struct work_struct *w)
 {
@@ -395,10 +395,17 @@ void kbase_qemu_fake_complete_async(struct kbase_device *kbdev, int js)
 
 	qemu_fake_kbdev = kbdev;
 	if (!work_ready) {
-		INIT_WORK(&qemu_fake_complete_work, qemu_fake_complete_worker);
+		INIT_DELAYED_WORK(&qemu_fake_complete_work, qemu_fake_complete_worker);
 		work_ready = true;
 	}
 	pr_info("QEMU-FAKE-DBG complete_async js=%d\n", js);
 	WRITE_ONCE(qemu_fake_pending_js, js);
-	schedule_work(&qemu_fake_complete_work);
+	/* Delay completion to emulate real GPU job-execution latency.
+	 * With instant completion, the completion kick fires before the
+	 * next atom submit lands in the pullable queue, so later atoms
+	 * are never scheduled. A 300ms delay keeps the JS busy across
+	 * the submit window and the completion kick then picks the
+	 * queued atoms up, matching real-GPU IRQ timing. */
+	schedule_delayed_work(&qemu_fake_complete_work,
+			      msecs_to_jiffies(300));
 }
