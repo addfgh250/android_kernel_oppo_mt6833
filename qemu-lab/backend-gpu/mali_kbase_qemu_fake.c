@@ -231,10 +231,14 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 				return -EFAULT;
 			}
 			{
-				/* bit 22 (0x400000) appears in real leaf ATEs on this
-				 * platform (origin unknown, not in either mode's flag
-				 * set) — mask it out of the phys. */
-				phys_addr_t phys = ((entry & ~0xFFFULL) & ~(1ULL << 22)) | (va & 0xFFF);
+				/* GPU translates with PA_BITS=40 (MMU_FEATURES).
+				 * ATE attribute bits live above the PA space:
+				 * ENTRY_NX_BIT = 1<<54 (official DDK get_mmu_flags)
+				 * — freed-JIT leaf ATEs carry it. Mask to the 40-bit
+				 * PA field, page-align, then add the page offset.
+				 * (The old bit22 mask was a misdiagnosis: bit22 is a
+				 * real PA bit here, the pollution was bit54 NX.) */
+				phys_addr_t phys = (entry & (((1ULL << 40) - 1) & ~0xFFFULL)) | (va & 0xFFF);
 				u8 *dst;
 				if (!pfn_valid(PFN_DOWN(phys))) {
 					dev_warn(kctx->kbdev->dev,
@@ -257,12 +261,12 @@ static int qemu_fake_mmu_write(struct kbase_context *kctx, u64 va, u64 value,
 
 		if ((entry & 3) == 3) {
 			/* LPAE table: descend */
-			pgd = entry & ~0xFFFULL;
+			pgd = entry & (((1ULL << 40) - 1) & ~0xFFFULL);
 			continue;
 		}
 		if ((entry & 3) == 1) {
 			/* LPAE leaf (block entry at level>bottom) */
-			phys_addr_t phys = (entry & ~0xFFFULL) +
+			phys_addr_t phys = (entry & (((1ULL << 40) - 1) & ~0xFFFULL)) +
 				(va & ((1ULL << (12 + (3 - level) * 9)) - 1));
 			u8 *dst = (u8 *)phys_to_virt(phys);
 			dev_dbg(kctx->kbdev->dev,
