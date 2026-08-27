@@ -382,13 +382,16 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 		kbase_gpu_complete_hw(kbdev, js, BASE_JD_EVENT_DONE, 0, &ts);
 		kbase_jm_try_kick_all(kbdev);
 	}
-	/* QEMU-LAB: re-allow submission for every scheduled kctx. The JS
-	 * policy clears submit_allowed (per-AS bitmask) and, with no GPU
-	 * IRQs in QEMU, the paths that would normally re-set it never
-	 * fire. Without this the second kctx's atoms sit on the pullable
-	 * list forever (run 33083495765: kctx2 pulled + re-added). */
+	/* QEMU-LAB: re-allow submission for every scheduled kctx, and make
+	 * the pullable-list head active on idle slots. kbase_jm_next_job()
+	 * only pulls atoms from hwaccess.active_kctx[js]; after a kctx goes
+	 * idle that pointer is NULL and - with no GPU IRQs in QEMU - the JS
+	 * policy that would activate the next pullable kctx never runs, so
+	 * the second kctx's atoms sit on the pullable list forever
+	 * (run 33085527376: kctx2 never pulled, active_kctx NULL). */
 	{
 		struct kbase_context *k;
+		int i, j;
 
 		list_for_each_entry(k, &kbdev->kctx_list, kctx_list_link) {
 			if (!kbase_ctx_flag(k, KCTX_DYING) &&
@@ -397,6 +400,22 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 				pr_info("QEMU-FAKE-DBG worker: re-allow submit kctx=%lx as=%d\n",
 					(unsigned long)k, k->as_nr);
 				kbasep_js_set_submit_allowed(&kbdev->js_data, k);
+			}
+		}
+		for (j = 0; j < kbdev->gpu_props.num_job_slots; j++) {
+			if (kbdev->hwaccess.active_kctx[j])
+				continue;
+			for (i = 0; i < KBASE_JS_ATOM_SCHED_PRIO_COUNT; i++) {
+				if (list_empty(&kbdev->js_data.ctx_list_pullable[j][i]))
+					continue;
+				k = list_entry(
+					kbdev->js_data.ctx_list_pullable[j][i].next,
+					struct kbase_context,
+					jctx.sched_info.ctx.ctx_list_entry[j]);
+				kbdev->hwaccess.active_kctx[j] = k;
+				pr_info("QEMU-FAKE-DBG worker: activate kctx=%lx js=%d\n",
+					(unsigned long)k, j);
+				break;
 			}
 		}
 		kbase_jm_try_kick_all(kbdev);
