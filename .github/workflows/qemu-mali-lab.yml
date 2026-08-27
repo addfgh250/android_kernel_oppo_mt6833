@@ -26,8 +26,17 @@ jobs:
 
       - name: Fetch generic kernel + add marker
         run: |
-          curl -sL --retry 10 --retry-delay 5 --retry-all-errors -o k.tar.xz https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz || curl -sL --retry 10 --retry-delay 5 --retry-all-errors -o k.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz
-          tar xJf k.tar.xz
+          fetch_kernel() {
+            if curl -fsSL --retry 8 --retry-delay 5 --connect-timeout 30 -o k.tar.xz https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz && xz -t k.tar.xz >/dev/null 2>&1; then
+              tar xJf k.tar.xz; return 0
+            fi
+            if curl -fsSL --retry 8 --retry-delay 5 --connect-timeout 30 -o k.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz && xz -t k.tar.xz >/dev/null 2>&1; then
+              tar xJf k.tar.xz; return 0
+            fi
+            echo "tarball mirrors failed, falling back to git clone"
+            git clone --depth 1 --branch v4.14.186 https://github.com/torvalds/linux linux-4.14.186
+          }
+          fetch_kernel
           mv linux-4.14.186 linux-m
           cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
           cp qemu-lab/vendor/trace-events-gpu.h linux-m/include/trace/events/gpu.h
