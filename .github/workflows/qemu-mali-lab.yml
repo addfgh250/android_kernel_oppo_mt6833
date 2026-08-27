@@ -26,7 +26,7 @@ jobs:
 
       - name: Fetch generic kernel + add marker
         run: |
-          curl -sL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz -o k.tar.xz
+          curl -sL --retry 10 --retry-delay 5 --retry-all-errors -o k.tar.xz https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz || curl -sL --retry 10 --retry-delay 5 --retry-all-errors -o k.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-4.14.186.tar.xz
           tar xJf k.tar.xz
           mv linux-4.14.186 linux-m
           cp qemu-lab/marker/qemu_marker.c linux-m/kernel/qemu_marker.c
