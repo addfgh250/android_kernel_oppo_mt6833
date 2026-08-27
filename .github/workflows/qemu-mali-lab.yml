@@ -34,7 +34,7 @@ jobs:
               tar xJf k.tar.xz; return 0
             fi
             echo "tarball mirrors failed, falling back to git clone"
-            git clone --depth 1 --branch v4.14.186 https://github.com/torvalds/linux linux-4.14.186
+            git clone --depth 1 --branch v4.14.186 https://github.com/gregkh/linux linux-4.14.186
           }
           fetch_kernel
           mv linux-4.14.186 linux-m
