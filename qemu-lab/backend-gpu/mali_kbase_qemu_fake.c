@@ -25,6 +25,7 @@
 #include <gpu/mali_kbase_gpu_regmap.h>
 #include <gpu/backend/mali_kbase_gpu_regmap_jm.h>
 #include <linux/highmem.h>
+#include <jm/mali_kbase_jm_js.h>
 #include <linux/workqueue.h>
 #include <linux/io.h>
 
@@ -380,7 +381,27 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 		pr_info("QEMU-FAKE-DBG worker js=%d -> complete+kick\n", js);
 		kbase_gpu_complete_hw(kbdev, js, BASE_JD_EVENT_DONE, 0, &ts);
 		kbase_jm_try_kick_all(kbdev);
-	} else {
+	}
+	/* QEMU-LAB: re-allow submission for every scheduled kctx. The JS
+	 * policy clears submit_allowed (per-AS bitmask) and, with no GPU
+	 * IRQs in QEMU, the paths that would normally re-set it never
+	 * fire. Without this the second kctx's atoms sit on the pullable
+	 * list forever (run 33083495765: kctx2 pulled + re-added). */
+	{
+		struct kbase_context *k;
+
+		list_for_each_entry(k, &kbdev->kctx_list, kctx_list_link) {
+			if (!kbase_ctx_flag(k, KCTX_DYING) &&
+			    k->as_nr != KBASEP_AS_NR_INVALID &&
+			    !kbasep_js_is_submit_allowed(&kbdev->js_data, k)) {
+				pr_info("QEMU-FAKE-DBG worker: re-allow submit kctx=%lx as=%d\n",
+					(unsigned long)k, k->as_nr);
+				kbasep_js_set_submit_allowed(&kbdev->js_data, k);
+			}
+		}
+		kbase_jm_try_kick_all(kbdev);
+	}
+	if (0) {
 		pr_info("QEMU-FAKE-DBG worker js=%d inspect=%d numslots=%d SKIP\n",
 			js, kbase_gpu_inspect(kbdev, js, 0),
 			kbdev->gpu_props.num_job_slots);
