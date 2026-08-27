@@ -403,8 +403,6 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 			}
 		}
 		for (j = 0; j < kbdev->gpu_props.num_job_slots; j++) {
-			if (kbdev->hwaccess.active_kctx[j])
-				continue;
 			for (i = 0; i < KBASE_JS_ATOM_SCHED_PRIO_COUNT; i++) {
 				if (list_empty(&kbdev->js_data.ctx_list_pullable[j][i]))
 					continue;
@@ -412,9 +410,14 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 					kbdev->js_data.ctx_list_pullable[j][i].next,
 					struct kbase_context,
 					jctx.sched_info.ctx.ctx_list_entry[j]);
-				kbdev->hwaccess.active_kctx[j] = k;
-				pr_info("QEMU-FAKE-DBG worker: activate kctx=%lx js=%d\n",
-					(unsigned long)k, j);
+				/* run 33086592808: active_kctx[js] never went NULL -
+				 * it stayed kctx1 (empty rb tree), so kbase_jm_next_job
+				 * never pulled kctx2's atoms. Switch unconditionally. */
+				if (kbdev->hwaccess.active_kctx[j] != k) {
+					kbdev->hwaccess.active_kctx[j] = k;
+					pr_info("QEMU-FAKE-DBG worker: activate kctx=%lx js=%d\n",
+						(unsigned long)k, j);
+				}
 				break;
 			}
 		}
