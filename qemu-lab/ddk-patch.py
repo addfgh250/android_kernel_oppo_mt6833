@@ -249,6 +249,39 @@ if 'QEMU-DBG pullable gate' not in s:
 	}''')
     write(p, s)
 
+# QEMU-LAB instrumentation: kbase_js_pull gates (the real pull path).
+# run 33083495765: kctx2 atoms pulled+re-added forever, no gate prints in
+# kbase_js_ctx_pullable -> the block happens in kbase_js_pull.
+p = os.path.join(MID, 'mali_kbase_js.c')
+s = read(p)
+if 'QEMU-DBG js_pull' not in s:
+    s = s.replace('''	if (!kbasep_js_is_submit_allowed(js_devdata, kctx)) {
+		dev_dbg(kbdev->dev, "JS: No submit allowed for kctx %p\n",
+			(void *)kctx);
+		return NULL;
+	}
+#ifdef CONFIG_MALI_ARBITER_SUPPORT''',
+'''	if (!kbasep_js_is_submit_allowed(js_devdata, kctx)) {
+		pr_info("QEMU-DBG js_pull: kctx=%lx js=%d as=%d submit_allowed=0x%x NOT_ALLOWED\n",
+			(unsigned long)kctx, js, kctx->as_nr,
+			js_devdata->runpool_irq.submit_allowed);
+		return NULL;
+	}
+#ifdef CONFIG_MALI_ARBITER_SUPPORT''')
+    s = s.replace('''	katom = jsctx_rb_peek(kctx, js);
+	if (!katom) {
+		dev_dbg(kbdev->dev, "JS: No pullable atom in kctx %p (s:%d)\n",
+			(void *)kctx, js);
+		return NULL;
+	}''',
+'''	katom = jsctx_rb_peek(kctx, js);
+	if (!katom) {
+		pr_info("QEMU-DBG js_pull: kctx=%lx js=%d NO_ATOM_IN_RB\n",
+			(unsigned long)kctx, js);
+		return NULL;
+	}''')
+    write(p, s)
+
 # mmu/backend/mali_kbase_mmu_jm.c
 p = os.path.join(MID, 'mmu', 'backend', 'mali_kbase_mmu_jm.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
