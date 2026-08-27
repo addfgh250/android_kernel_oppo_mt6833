@@ -400,12 +400,17 @@ void kbase_qemu_fake_complete_async(struct kbase_device *kbdev, int js)
 	}
 	pr_info("QEMU-FAKE-DBG complete_async js=%d\n", js);
 	WRITE_ONCE(qemu_fake_pending_js, js);
-	/* Delay completion to emulate real GPU job-execution latency.
-	 * With instant completion, the completion kick fires before the
-	 * next atom submit lands in the pullable queue, so later atoms
-	 * are never scheduled. A 300ms delay keeps the JS busy across
-	 * the submit window and the completion kick then picks the
-	 * queued atoms up, matching real-GPU IRQ timing. */
+	/* Complete on a deferred work item (breaks the submit-path call
+	 * stack, otherwise the completion would run inside
+	 * kbase_jm_hw_submit -> kbase_jd_submit while those frames still
+	 * hold atom references = use-after-free). The old 300ms delay was
+	 * fatal: the exploit submits 178 atoms ~10ms apart, so with a
+	 * 300ms completion the slot stays busy and atoms pile up on the
+	 * pullable queue; the post-completion kick demonstrably fails to
+	 * drain it (run 33065095194 executed 6/178 atoms). 1ms makes
+	 * each atom complete well inside the 10ms submit interval, so
+	 * the slot is always idle for the next submit-path kick and no
+	 * queue ever forms. */
 	schedule_delayed_work(&qemu_fake_complete_work,
-			      msecs_to_jiffies(300));
+			      msecs_to_jiffies(1));
 }
