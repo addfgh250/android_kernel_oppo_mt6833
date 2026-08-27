@@ -275,3 +275,31 @@ if 'QEMU-LAB no-wa-blob' not in s:
     write(p, s)
 
 print('DDK MTK-decouple + fake-hw patch done')
+
+# ---------------- QEMU-DBG instrumentation (38181 pool routing forensics) ----------------
+mmu_p = os.path.join(MID, 'mmu', 'mali_kbase_mmu.c')
+sub(mmu_p, "\tp = kbase_mem_pool_alloc(&kbdev->mem_pools.small[mmut->group_id]);\n\tif (!p)\n\t\treturn 0;",
+"\tp = kbase_mem_pool_alloc(&kbdev->mem_pools.small[mmut->group_id]);\n"
+"\tpr_info(\"QEMU-DBG alloc_pgd grp=%d pool_cur=%zu hit=%d phys=%llx\\n\",\n"
+"\t\tmmut->group_id,\n"
+"\t\t(size_t)kbase_mem_pool_size(&kbdev->mem_pools.small[mmut->group_id]),\n"
+"\t\tp ? 1 : 0,\n"
+"\t\tp ? (unsigned long long)page_to_phys(p) : 0ULL);\n"
+"\tif (!p)\n\t\treturn 0;")
+
+mem_p = os.path.join(MID, 'mali_kbase_mem.c')
+sub(mem_p, "\tbool reclaimed = (alloc->evicted != 0);",
+"\tbool reclaimed = (alloc->evicted != 0);\n"
+"\tpr_info(\"QEMU-DBG free_phy grp=%d nr=%zu evicted=%d kctx_cur=%zu dev_cur=%zu\\n\",\n"
+"\t\talloc->group_id, nr_pages_to_free, alloc->evicted,\n"
+"\t\t(size_t)kbase_mem_pool_size(&kctx->mem_pools.small[alloc->group_id]),\n"
+"\t\t(size_t)kbase_mem_pool_size(&kctx->kbdev->mem_pools.small[alloc->group_id]));")
+
+ctx_p = os.path.join(MID, 'context', 'mali_kbase_context.c')
+sub(ctx_p, "\tkbase_mmu_init(kctx->kbdev,\n\t\t&kctx->mmu, kctx,\n\t\tbase_context_mmu_group_id_get(kctx->create_flags));",
+"\tpr_info(\"QEMU-DBG mmu_group create_flags=0x%x grp=%d\\n\",\n"
+"\t\tkctx->create_flags,\n"
+"\t\t(int)base_context_mmu_group_id_get(kctx->create_flags));\n"
+"\tkbase_mmu_init(kctx->kbdev,\n\t\t&kctx->mmu, kctx,\n\t\tbase_context_mmu_group_id_get(kctx->create_flags));")
+
+print("instrumentation appended")
