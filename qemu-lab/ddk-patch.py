@@ -214,6 +214,41 @@ if 'QEMU-FAKE-DBG pullable' not in s:
 ''')
     write(p, s)
 
+# QEMU-LAB instrumentation: kbase_js_ctx_pullable failure-gate forensics
+# (run 33081774040: kctx2 atoms submitted but never executed - pulled and
+#  re-added every time. Print which gate blocks them.)
+p = os.path.join(MID, 'mali_kbase_js.c')
+s = read(p)
+if 'QEMU-DBG pullable gate' not in s:
+    s = s.replace('''	if (is_scheduled) {
+		if (!kbasep_js_is_submit_allowed(js_devdata, kctx)) {
+			dev_dbg(kbdev->dev, "JS: No submit allowed for kctx %p\n",
+				(void *)kctx);
+			return false;
+		}
+	}
+	katom = jsctx_rb_peek(kctx, js);
+	if (!katom) {
+		dev_dbg(kbdev->dev, "JS: No pullable atom in kctx %p (s:%d)\n",
+			(void *)kctx, js);
+		return false; /* No pullable atoms */
+	}''',
+'''	if (is_scheduled) {
+		if (!kbasep_js_is_submit_allowed(js_devdata, kctx)) {
+			pr_info("QEMU-DBG pullable gate: kctx=%lx js=%d as=%d submit_allowed=0x%x NOT_ALLOWED\n",
+				(unsigned long)kctx, js, kctx->as_nr,
+				js_devdata->runpool_irq.submit_allowed);
+			return false;
+		}
+	}
+	katom = jsctx_rb_peek(kctx, js);
+	if (!katom) {
+		pr_info("QEMU-DBG pullable gate: kctx=%lx js=%d NO_ATOM_IN_RB\n",
+			(unsigned long)kctx, js);
+		return false; /* No pullable atoms */
+	}''')
+    write(p, s)
+
 # mmu/backend/mali_kbase_mmu_jm.c
 p = os.path.join(MID, 'mmu', 'backend', 'mali_kbase_mmu_jm.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
