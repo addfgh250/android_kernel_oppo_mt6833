@@ -211,6 +211,14 @@ if 'QEMU-FAKE-DBG pullable' not in s:
 
 	list_add_tail(&kctx->jctx.sched_info.ctx.ctx_list_entry[js],
 			&kbdev->js_data.ctx_list_pullable[js][kctx->priority]);
+
+#ifdef QEMU_FAKE_JOBS
+	/* run 33088823994: the complete-driven worker chain dies when a kctx
+	 * drains; wake the fake worker on every pullable add so the head kctx
+	 * gets activated even when no completion event will ever arrive. */
+	extern void kbase_qemu_fake_sched_async(struct kbase_device *kbdev);
+	kbase_qemu_fake_sched_async(kbdev);
+#endif
 ''')
     write(p, s)
 
@@ -280,6 +288,39 @@ if 'QEMU-DBG js_pull' not in s:
 			(unsigned long)kctx, js);
 		return NULL;
 	}''')
+    write(p, s)
+
+# QEMU-LAB instrumentation: kbase_js_sched forensics (run 33088823994:
+# kctx1 drains, complete-driven chain dies, kctx2 atoms never scheduled).
+p = os.path.join(MID, 'mali_kbase_js.c')
+s = read(p)
+if 'QEMU-DBG kbase_js_sched enter' not in s:
+    s = s.replace('''	dev_dbg(kbdev->dev, "%s kbdev %p mask 0x%x\\n",
+		__func__, (void *)kbdev, (unsigned int)js_mask);
+''',
+'''	pr_info("QEMU-DBG kbase_js_sched enter mask=0x%x\\n",
+		(unsigned int)js_mask);
+''')
+    s = s.replace('''				dev_dbg(kbdev->dev,
+					"No kctx on pullable list (s:%d)\\n",
+					js);
+''',
+'''				pr_info("QEMU-DBG sched: no kctx on pullable list (s:%d)\\n",
+					js);
+''')
+    s = s.replace('''					dev_dbg(kbdev->dev,
+						"Suspend pending (s:%d)\\n", js);
+''',
+'''					pr_info("QEMU-DBG sched: suspend pending (s:%d)\\n",
+						js);
+''')
+    s = s.replace('''				dev_dbg(kbdev->dev,
+					"kctx %p cannot be used at this time\\n",
+					kctx);
+''',
+'''				pr_info("QEMU-DBG sched: kctx=%lx cannot be used (s:%d)\\n",
+					(unsigned long)kctx, js);
+''')
     write(p, s)
 
 # mmu/backend/mali_kbase_mmu_jm.c
