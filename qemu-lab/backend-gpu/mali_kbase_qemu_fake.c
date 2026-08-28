@@ -370,12 +370,13 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 	struct kbase_device *kbdev = qemu_fake_kbdev;
 	int js = READ_ONCE(qemu_fake_pending_js);
 	unsigned long flags;
+	bool requeue = false;
 
-	if (!kbdev || js < 0)
+	if (!kbdev)
 		return;
 
 	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-	if (js < kbdev->gpu_props.num_job_slots &&
+	if (js >= 0 && js < kbdev->gpu_props.num_job_slots &&
 	    kbase_gpu_inspect(kbdev, js, 0)) {
 		ktime_t ts = ktime_get();
 		pr_info("QEMU-FAKE-DBG worker js=%d -> complete+kick\n", js);
@@ -428,19 +429,51 @@ static void qemu_fake_complete_worker(struct work_struct *w)
 			js, kbase_gpu_inspect(kbdev, js, 0),
 			kbdev->gpu_props.num_job_slots);
 	}
+	/* run 33088823994: the complete-driven worker chain dies when a kctx
+	 * drains (no new complete_async is ever scheduled), so kctx2 atoms sit
+	 * on the pullable list forever. Re-arm the worker while any pullable
+	 * list is non-empty so the activate/kick path keeps being driven in
+	 * QEMU (no GPU IRQs exist to run the JS policy). */
+	{
+		int j, i;
+
+		for (j = 0; j < kbdev->gpu_props.num_job_slots; j++) {
+			for (i = 0; i < KBASE_JS_ATOM_SCHED_PRIO_COUNT; i++) {
+				if (!list_empty(
+					&kbdev->js_data.ctx_list_pullable[j][i])) {
+					requeue = true;
+					break;
+				}
+			}
+			if (requeue)
+				break;
+		}
+	}
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 	qemu_fake_pending_js = -1;
+	if (requeue) {
+		pr_info("QEMU-FAKE-DBG worker: re-arm (pullable non-empty)\n");
+		schedule_delayed_work(&qemu_fake_complete_work,
+				      msecs_to_jiffies(5));
+	}
+}
+
+static void qemu_fake_schedule_worker(int delay_ms)
+{
+	static bool work_ready;
+
+	if (!work_ready) {
+		INIT_DELAYED_WORK(&qemu_fake_complete_work,
+				  qemu_fake_complete_worker);
+		work_ready = true;
+	}
+	schedule_delayed_work(&qemu_fake_complete_work,
+			      msecs_to_jiffies(delay_ms));
 }
 
 void kbase_qemu_fake_complete_async(struct kbase_device *kbdev, int js)
 {
-	static bool work_ready;
-
 	qemu_fake_kbdev = kbdev;
-	if (!work_ready) {
-		INIT_DELAYED_WORK(&qemu_fake_complete_work, qemu_fake_complete_worker);
-		work_ready = true;
-	}
 	pr_info("QEMU-FAKE-DBG complete_async js=%d\n", js);
 	WRITE_ONCE(qemu_fake_pending_js, js);
 	/* Complete on a deferred work item (breaks the submit-path call
@@ -454,6 +487,16 @@ void kbase_qemu_fake_complete_async(struct kbase_device *kbdev, int js)
 	 * each atom complete well inside the 10ms submit interval, so
 	 * the slot is always idle for the next submit-path kick and no
 	 * queue ever forms. */
-	schedule_delayed_work(&qemu_fake_complete_work,
-			      msecs_to_jiffies(1));
+	qemu_fake_schedule_worker(1);
+}
+
+/* Sched-only wake: drive the activate/kick path without completing an
+ * atom. Called from the pullable-list add path (ddk-patch.py) so a freshly
+ * queued kctx gets activated even when the complete-driven chain is quiet
+ * (run 33088823994: kctx2's phase-2/3 atoms never executed). */
+void kbase_qemu_fake_sched_async(struct kbase_device *kbdev)
+{
+	qemu_fake_kbdev = kbdev;
+	pr_info("QEMU-FAKE-DBG sched_async\n");
+	qemu_fake_schedule_worker(1);
 }
