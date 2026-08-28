@@ -323,6 +323,95 @@ if 'QEMU-DBG kbase_js_sched enter' not in s:
 ''')
     write(p, s)
 
+# QEMU-LAB: runtime-PM suspend must not set pm.suspending. In QEMU no OS
+# resume ever happens, so once the devicetree runtime-PM autosuspend fires
+# (GPU idle ~200ms after phase 1 drains), every kbase_js_pull() returns NULL
+# silently and all remaining atoms stall forever (run 33138587651).
+p = os.path.join(MID, 'mali_kbase_pm.c')
+s = read(p)
+if 'QEMU-LAB no-pm-suspend' not in s:
+    s = s.replace('''void kbase_pm_driver_suspend(struct kbase_device *kbdev)
+{
+	KBASE_DEBUG_ASSERT(kbdev);
+''',
+'''void kbase_pm_driver_suspend(struct kbase_device *kbdev)
+{
+	KBASE_DEBUG_ASSERT(kbdev);
+#ifdef QEMU_FAKE_JOBS
+	/* QEMU-LAB no-pm-suspend: skip the real suspend (and the
+	 * pm.suspending flag) - the fake GPU never needs powering down
+	 * and nothing will ever resume us. */
+	pr_info("QEMU-DBG pm driver_suspend skipped\\n");
+	return;
+#endif
+''')
+    write(p, s)
+
+# QEMU-LAB instrumentation: kbase_js_pull silent gates (run 33138587651:
+# pull returns NULL with no print; instrument the remaining gates).
+p = os.path.join(MID, 'mali_kbase_js.c')
+s = read(p)
+if 'QEMU-DBG js_pull ENTER' not in s:
+    s = s.replace('''	kbdev = kctx->kbdev;
+	dev_dbg(kbdev->dev, "JS: pulling an atom from kctx %p (s:%d)\\n",
+		(void *)kctx, js);
+
+	js_devdata = &kbdev->js_data;
+''',
+'''	kbdev = kctx->kbdev;
+	pr_info("QEMU-DBG js_pull ENTER kctx=%lx js=%d\\n",
+		(unsigned long)kctx, js);
+
+	js_devdata = &kbdev->js_data;
+''')
+    s = s.replace('''	if (kbase_pm_is_suspending(kbdev))
+#endif
+		return NULL;
+''',
+'''	if (kbase_pm_is_suspending(kbdev)) {
+		pr_info("QEMU-DBG js_pull: kctx=%lx js=%d PM_SUSPENDING\\n",
+			(unsigned long)kctx, js);
+#endif
+		return NULL;
+	}
+''')
+    s = s.replace('''	if (kctx->blocked_js[js][katom->sched_priority]) {
+		dev_dbg(kbdev->dev,
+			"JS: kctx %p is blocked from submitting atoms at priority %d (s:%d)\\n",
+			(void *)kctx, katom->sched_priority, js);
+		return NULL;
+	}
+''',
+'''	if (kctx->blocked_js[js][katom->sched_priority]) {
+		pr_info("QEMU-DBG js_pull: kctx=%lx js=%d BLOCKED_JS prio=%d\\n",
+			(unsigned long)kctx, js, (int)katom->sched_priority);
+		return NULL;
+	}
+''')
+    s = s.replace('''	if (atomic_read(&katom->blocked)) {
+		dev_dbg(kbdev->dev, "JS: Atom %p is blocked in js_pull\\n",
+			(void *)katom);
+		return NULL;
+	}
+''',
+'''	if (atomic_read(&katom->blocked)) {
+		pr_info("QEMU-DBG js_pull: kctx=%lx js=%d ATOM_BLOCKED\\n",
+			(unsigned long)kctx, js);
+		return NULL;
+	}
+''')
+    s = s.replace('''		if (prev_atom && prev_atom->kctx != kctx)
+			return NULL;
+''',
+'''		if (prev_atom && prev_atom->kctx != kctx) {
+			pr_info("QEMU-DBG js_pull: kctx=%lx js=%d PRE_DEP_ORDER prev_kctx=%lx\\n",
+				(unsigned long)kctx, js,
+				(unsigned long)prev_atom->kctx);
+			return NULL;
+		}
+''')
+    write(p, s)
+
 # mmu/backend/mali_kbase_mmu_jm.c
 p = os.path.join(MID, 'mmu', 'backend', 'mali_kbase_mmu_jm.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
