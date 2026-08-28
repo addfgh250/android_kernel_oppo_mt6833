@@ -412,6 +412,27 @@ if 'QEMU-DBG js_pull ENTER' not in s:
 ''')
     write(p, s)
 
+# QEMU-LAB: force PM cores "requested" in slot_update. The fake GPU has no
+# real power state; the policy's cores_requested flag flaps between jobs and
+# atoms stall in WAITING_FOR_CORE_AVAILABLE until the job timeout soft-stops
+# them -> reset -> blocked_js death spiral (run 33140463414: 1/25 execs).
+p = os.path.join(MID, 'backend', 'gpu', 'mali_kbase_jm_rb.c')
+s = read(p)
+if 'QEMU-LAB cores-requested' not in s:
+    s = s.replace('''				cores_ready = kbase_pm_cores_requested(kbdev,
+						true);
+''',
+'''#ifdef QEMU_FAKE_JOBS
+				/* QEMU-LAB cores-requested: fake GPU always has
+				 * cores available. */
+				cores_ready = true;
+#else
+				cores_ready = kbase_pm_cores_requested(kbdev,
+						true);
+#endif
+''')
+    write(p, s)
+
 # mmu/backend/mali_kbase_mmu_jm.c
 p = os.path.join(MID, 'mmu', 'backend', 'mali_kbase_mmu_jm.c')
 sub(p, '#include <mtk_gpufreq.h>\n', '')
