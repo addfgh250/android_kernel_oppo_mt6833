@@ -5,6 +5,11 @@ on:
     branches:
       - qemu-mali-ci
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'exploit mode: 1c | miss'
+        required: true
+        default: '1c'
 
 jobs:
   qemu-mali:
@@ -112,7 +117,10 @@ jobs:
       - name: Build userspace + initramfs
         run: |
           mkdir -p ramfs/proc ramfs/dev ramfs/sys
-          aarch64-linux-gnu-gcc -static -O2 -Wall qemu-lab/exploit/qemu-exploit.c -o ramfs/exploit || exit 1
+          EXTRA=""
+          if [ "${{ github.event.inputs.mode }}" = "miss" ]; then EXTRA="-DMISS_MODE"; fi
+          echo "build mode: ${{ github.event.inputs.mode }} (EXTRA=$EXTRA)"
+          aarch64-linux-gnu-gcc -static -O2 -Wall $EXTRA qemu-lab/exploit/qemu-exploit-1c.c -o ramfs/exploit || exit 1
           aarch64-linux-gnu-gcc -static -O2 -Wall qemu-lab/init/init.c -o ramfs/init || exit 1
           DDK=drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers
           cp $DDK/base/memory_group_manager/memory_group_manager.ko ramfs/
